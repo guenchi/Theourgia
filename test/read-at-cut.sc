@@ -287,7 +287,10 @@
 ;; each one's earlier value. The answers read live at the cut are kept and the
 ;; cut reads compared with them whole.
 (let* ((c (fresh-store!)) (st (car c)) (w (cadr c))
-       (id (new-id (ask st 'insert "--under" "root" "--title" "Doc" "--text" "body-zero")))
+       ;; THE TITLE IS THE HEADING'S: a section's stored heading line is shown
+       ;; while it spells the section's level and title, so the title moves
+       ;; with it, after the cut too.
+       (id (new-id (ask st 'insert "--under" "root" "--title" "Heading-zero" "--text" "body-zero")))
        (_ (ask st 'set id "heading-src" "# Heading-zero\n"))
        (_ (ask st 'set id "front" "front-zero\n"))
        (child (new-id (ask st 'insert "--under" id "--title" "Child" "--text" "child-zero")))
@@ -297,6 +300,7 @@
        (_ (ask st 'set id "src" "body-one"))
        (_ (ask st 'set child "src" "child-one"))
        (_ (ask st 'set id "heading-src" "# Heading-one\n"))
+       (_ (ask st 'set id "title" "Heading-one"))
        (_ (ask st 'set id "front" "front-one\n"))
        (cut (cut-text cut4)))
   (want "RC-4 --working, --working-info, --writer and --signature with --cut are refused incompatible-cut-options"

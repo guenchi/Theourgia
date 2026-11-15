@@ -655,14 +655,15 @@
                           (rec 1 '(put ((kind . section) (title . "T") (src . 7)
                                         (parent . root) (ord . 0))))))
         ;; THE EXIT CODE IS THE READING. A field that is not text now
-        ;; contributes nothing, so the rendered document is EMPTY and
-        ;; there are no lines to look at -- while an `(error internal
-        ;; ...)` would print one. Asking for the first line raised on
-        ;; the success case, which is the row failing on the answer it
-        ;; exists to see.
+        ;; contributes nothing, so the rendered section is its heading
+        ;; line alone ("# T", made from its title: it stored no heading
+        ;; line) -- while an `(error internal ...)` would print one line
+        ;; and exit non-zero. Asking for the first line raised on the
+        ;; success case, which is the row failing on the answer it exists
+        ;; to see.
         (let ((r (run d "read" "mirrorzz.1" "--md")))
           (list (code-of r) (length (lines-of r)))))
-      (list 0 0))
+      (list 0 1))
 ;; TWIN: AND A NEIGHBOUR WITH REAL TEXT STILL RENDERS IT, so the row
 ;; above is about surviving a field it cannot use rather than about
 ;; rendering nothing at all.
@@ -675,7 +676,7 @@
                                         (parent . root) (ord . 0))))))
         (let ((r (run d "read" "mirrorzz.1" "--md")))
           (list (code-of r) (length (lines-of r)))))
-      (list 0 1))
+      (list 0 2))
 ;; AND A DOCUMENT'S OWN BYTES INCLUDE ITS FRONT MATTER, which is what the
 ;; README says a file-level block's body is. The reader answered only
 ;; what sits above the first heading.

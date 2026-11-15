@@ -2111,12 +2111,20 @@
                                (deep? (append (text ((project-entry 'block-text) state (car rest) #f))
                                               (receipt state ((project-entry 'subtree-ids) state (car rest)))))
                                (else
-                                ;; ONE BLOCK'S OWN BYTES, which is not the
-                                ;; same question and is answered from the
-                                ;; block rather than from the renderer: a
-                                ;; reader asking for this block is asking
-                                ;; what IT says, not what its heading would
-                                ;; look like if the title had since changed.
+                                ;; ONE BLOCK'S OWN BYTES, AND ITS HEADING AS THE
+                                ;; SECTION SAYS IT. `front` and `src` are the
+                                ;; block's own bytes. A section's heading is its
+                                ;; own stored line while that line still spells
+                                ;; the section's level and title, and otherwise
+                                ;; the line those fields make -- md.sc's
+                                ;; heading-line, the rule export-md and read
+                                ;; --recursive --md answer through -- so a
+                                ;; section made by insert, which stored no line,
+                                ;; has its heading, and a retitled one shows the
+                                ;; title it has rather than the one it had.
+                                ;; (Until 2026-11 this answered the stored line
+                                ;; alone, stale or absent; read --md and read
+                                ;; --recursive --md then disagreed for one leaf.)
                                 ;; A FIELD THAT IS NOT TEXT IS NOT TEXT. These
                                 ;; three go straight into `string-append`, and
                                 ;; a value that is not a string raised -- the
@@ -2134,6 +2142,9 @@
                                 ;; block's body is the front matter and
                                 ;; whatever sits above the first heading; this
                                 ;; read answered only the latter.
+                                ;;
+                                ;; A DATUM BLOCK HAS NO MARKDOWN: its body is a
+                                ;; datum, and this read answered an empty text.
                                 (let* ((fs (cdr (assq 'fields b)))
                                        (str (lambda (k)
                                               (let ((e (assq k fs)))
@@ -2142,10 +2153,16 @@
                                                       ((and (bytevector? (cdr e)) (src-text (cdr e))))
                                                       (else "")))))
                                        (front (str 'front))
-                                       (head (str 'heading-src))
+                                       (head (if (equal? (assq 'kind fs) '(kind . section))
+                                                 (heading-line (str 'heading-src)
+                                                               (let ((e (assq 'level fs))) (and e (cdr e)))
+                                                               (str 'title))
+                                                 (str 'heading-src)))
                                        (body (str 'src)))
-                                  (append (text (string-append front head body))
-                                          (receipt state (list (car rest)))))))))))
+                                  (if (equal? (assq 'mode fs) '(mode . datum))
+                                      (list 'error 'not-markdown (list 'id (car rest)) '(kind datum))
+                                      (append (text (string-append front head body))
+                                              (receipt state (list (car rest))))))))))))
                       (deep?
                        (guarded
                          (lambda ()

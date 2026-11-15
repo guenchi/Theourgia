@@ -102,26 +102,13 @@
   ;; bytes were replayed, the file came back with the OLD heading, and
   ;; re-importing that file wrote a second record putting the title back
   ;; to what the file said. The change could not be made to stick.
-  (define (effective-level b)
-    (let ((v (field b 'level)))
-      (if (and (integer? v) (exact? v) (> v 0) (< v 7)) v 1)))
+  (define (effective-level b) (heading-level (field b 'level)))
 
+  ;; THE RULE IS md.sc's heading-line, one pure function read --md calls too;
+  ;; this reads the three fields and hands them over.
   (define (effective-heading state id)
-    (let* ((b (state-read state id))
-           (stored (text-field b 'heading-src))
-           ;; A LEVEL THAT IS NOT A LEVEL IS TREATED AS ABSENT. This is
-           ;; used as a string length two lines down, so a value of "2"
-           ;; -- which is what the command line produces, because it
-           ;; passes every field value as text -- raised instead of
-           ;; rendering. A reader may refuse to understand a value; it
-           ;; may not fall over on one.
-           (level (effective-level b))
-           (title (text-field b 'title))
-           (parsed (parse-heading stored)))
-      (if (and parsed (= (car parsed) level) (string=? (cdr parsed) title))
-          stored
-          (string-append (make-string level #\#) " " title "
-"))))
+    (let ((b (state-read state id)))
+      (heading-line (text-field b 'heading-src) (field b 'level) (text-field b 'title))))
 
   ;; Asked of one stored line: the splitter is the only thing that
   ;; decides what a heading line means, so it decides here too.

@@ -207,11 +207,16 @@
 (define (second-of-items a) (dedup (map cadr (items-of a))))
 (define answers
   (list (answer 'read (list 'read X) record-id (list X))
-        ;; A markdown read of one block answers that block's own bytes, which
-        ;; need not hold its title: the block it shows is the one whose
-        ;; text it is.
+        ;; A markdown read of one block answers that block's own bytes,
+        ;; after the heading line a section has (its stored line, or the one
+        ;; its level and title make): the block it shows is the one whose
+        ;; text ends it.
         (answer 'read-md (list 'read X "--md")
-                (lambda (a) (filter (lambda (id) (string=? (text-of a) (src-of id))) (list X Y)))
+                (lambda (a) (filter (lambda (id)
+                                      (let ((t (text-of a)) (s (src-of id)))
+                                        (and (>= (string-length t) (string-length s))
+                                             (string=? (substring t (- (string-length t) (string-length s)) (string-length t)) s))))
+                                    (list X Y)))
                 (list X))
         (answer 'read-md-recursive (list 'read X "--md" "--recursive") (lambda (a) (shown-in a (list Y X))) (list X Y))
         (answer 'read-recursive (list 'read X "--recursive") item-record-ids (list X Y))

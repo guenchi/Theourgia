@@ -252,7 +252,13 @@ It answers:
     (ok (block <id> <entries> (hash "<hash>") (ast <node> ...)) (cut <cut>) (versions ((<id> . "<hash>"))))
 
 What a block says. Without options it is one block as data; `--md` gives its own
-bytes — the heading line it was written with, then its body.
+bytes — its front matter, its heading line, then its body. A section's heading
+line is the one it was written with while that line still spells the section's
+level and title, and otherwise the line those fields make, `#` times the level
+(a level that is not 1 to 6 reads as 1), a space and the title: so a section
+made by `insert` has its heading, and a retitled one shows the title it has --
+the line `export-md` and `--recursive --md` write. A datum block has no
+markdown: `--md` on one answers `(error not-markdown (id <id>) (kind datum))`.
 
 **The version is the token `--if-unchanged` compares**: the block's hash in the
 state that was read, so a caller that read a block can write it back only if

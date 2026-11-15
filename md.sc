@@ -32,7 +32,8 @@
           doc-front doc-src doc-sections
           section-level section-title section-heading-src section-src
           make-section section?
-          md->blocks blocks->md md-ref-nodes)
+          md->blocks blocks->md md-ref-nodes
+          heading-level heading-line)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs bytevectors)
           (rnrs unicode) (rnrs records syntactic) (rnrs io ports))
 
@@ -175,6 +176,32 @@
          (char=? (string-ref text (+ start 2)) #\-)))
 
   ;; ---- split ---------------------------------------------------------------
+
+;; ---- a section's heading line, from its three fields ------------------------
+  ;;
+  ;; THE ONE RULE, for export-md and read --md alike. Pure: it is handed the
+  ;; three fields' values and knows nothing of the store.
+  ;;
+  ;; A LEVEL THAT IS NOT A LEVEL IS TREATED AS ABSENT, and absent is 1: the
+  ;; command line passes every field value as text, so a stored level can be
+  ;; the string "2", and a reader may refuse to understand a value but may not
+  ;; fall over on one.
+  (define (heading-level v)
+    (if (and (integer? v) (exact? v) (> v 0) (< v 7)) v 1))
+  ;; -> the heading line: STORED, the stored heading-src, as it is when it
+  ;; parses to this level and TITLE, else "#"*level " " title LF. A stored
+  ;; line that no longer matches (a title set since) is written afresh from
+  ;; the fields, so a change made with `set title` is what is printed; an
+  ;; absent one (a section made by insert) is written from them too. STORED
+  ;; and TITLE are text, "" when absent; LEVEL is the raw stored value.
+  (define (heading-line stored level title)
+    (let ((level (heading-level level))
+          (parsed (let ((ss (doc-sections (md-split stored))))
+                    (and (= 1 (length ss))
+                         (cons (section-level (car ss)) (section-title (car ss)))))))
+      (if (and parsed (= (car parsed) level) (string=? (cdr parsed) title))
+          stored
+          (string-append (make-string level #\#) " " title "\n"))))
 
   (define (md-split text)
     (let* ((n (string-length text))
