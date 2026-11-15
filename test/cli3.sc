@@ -2736,6 +2736,51 @@
         (list a b (> mid before) (> after mid)))
       (list 1 1 #t #t))
 
+;; TWO SEARCHES INTERLEAVED IN ONE PROCESS (F448). The count was the
+;; difference of the process counter across one block's reads, and a second
+;; search running meanwhile in the process -- a daemon answers requests
+;; concurrently -- decodes in that window and moved it: the first search then
+;; counted a readable block as unreadable. Interleaved here by engines, each
+;; scan given FUEL ticks in turn, over a range of fuels so the switches fall
+;; at many points of the scan. A has twenty readable blocks, B twenty whose
+;; source is not text; every interleaving must give A 0 and B 20. The scans
+;; run over states loaded beforehand (search-state-report): a load refuses a
+;; continuation that escapes it, which an engine's expiry is. Before the fix
+;; A read 1 to 6 at eleven of the twelve fuels.
+(define (interleave2 ta tb fuel)
+  (let loop ((ea (make-engine ta)) (eb (make-engine tb)) (va #f) (vb #f) (a-turn #t))
+    (cond
+      ((and (not ea) (not eb)) (list va vb))
+      ((and a-turn ea)
+       (ea fuel (lambda (left v) (loop #f eb v vb #f)) (lambda (next) (loop next eb va vb #f))))
+      (eb
+       (eb fuel (lambda (left v) (loop ea #f va v #t)) (lambda (next) (loop ea next va vb #t))))
+      (else (loop ea eb va vb #t)))))
+(define d11a (fresh-store!))
+(init! d11a)
+(define d11b (fresh-store!))
+(init! d11b)
+(let loop ((k 0) (bad '()))
+  (if (< k 20)
+      (begin (insert! d11a "--title" (format "readable block ~a" k))
+             (loop (+ k 1) (cons (insert! d11b "--title" (format "unreadable block ~a" k)) bad)))
+      (run-with-stdin d11b
+                      (apply string-append "("
+                             (append (map (lambda (id) (string-append "(set \"" id "\" src #vu8(255 254 253)) ")) bad)
+                                     (list ")")))
+                      "batch")))
+(define st11a (open-and-reduce d11a))
+(define st11b (open-and-reduce d11b))
+(define (unreadable-of st) (lambda () (cdr (assq 'unreadable-blocks (search-state-report st "block" 100)))))
+(define interleavings
+  (map (lambda (fuel) (cons fuel (interleave2 (unreadable-of st11a) (unreadable-of st11b) fuel)))
+       '(10 25 50 100 200 400 800 1600 3200 6400 12800 25600)))
+(printf "N10 interleaved: (fuel A B) ~s\n" interleavings)
+(want "N10 two searches interleaved in one process each count their own blocks: A 0 and B 20 at every fuel"
+      (list ((unreadable-of st11a)) ((unreadable-of st11b))
+            (filter (lambda (r) (not (equal? (cdr r) '(0 20)))) interleavings))
+      '(0 20 ()))
+
 (want "N10 TWIN: and two unreadable blocks are two"
       (let ((d (fresh-store!)))
         (init! d)

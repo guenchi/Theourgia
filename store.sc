@@ -947,23 +947,30 @@
   ;; listing, not a scan's diagnostic.
   (define stored-text-fields (quote (title keywords src)))
   (define (undecodable-text-blocks state)
-    (let ((bad? (lambda (v) (and (bytevector? v) (not (decoded-text v #f))))))
-      (filter pair?
-              (map (lambda (r)
-                     (let* ((id (caddr r))
-                            (block (state-read state id))
-                            (fields (if block (cdr (assq (quote fields) block)) (quote ())))
-                            (names (filter
-                                     (lambda (name)
-                                       (let ((e (assq name fields)))
-                                         (and e
-                                              (or (bad? (cdr e))
-                                                  (let ((cs (and (state-field-contested? state id name (cdr e))
-                                                                 (conflict-candidates (cdr e)))))
-                                                    (and cs (exists (lambda (c) (bad? (car c))) cs)))))))
-                                     stored-text-fields)))
-                       (if (pair? names) (cons id names) (quote ()))))
-                   (state-outline state)))))
+    (filter pair?
+            (map (lambda (r)
+                   (let* ((id (caddr r))
+                          (names (undecodable-fields state id (state-read state id) stored-text-fields)))
+                     (if (pair? names) (cons id names) (quote ()))))
+                 (state-outline state))))
+  ;; -> THE FIELDS AMONG NAMES of the block whose stored text does not
+  ;; decode, a contested field named when one of its candidates does not.
+  ;; Decoded without counting. A search and a grep ask this of each block
+  ;; they scan, so their `unreadable-blocks` is a fact about their own
+  ;; answer: it was the difference of the process counter across the
+  ;; block's reads, which another search running meanwhile in the same
+  ;; process moved too (F448).
+  (define (undecodable-fields state id block names)
+    (let ((bad? (lambda (v) (and (bytevector? v) (not (decoded-text v #f)))))
+          (fields (if block (cdr (assq (quote fields) block)) (quote ()))))
+      (filter (lambda (name)
+                (let ((e (assq name fields)))
+                  (and e
+                       (or (bad? (cdr e))
+                           (let ((cs (and (state-field-contested? state id name (cdr e))
+                                          (conflict-candidates (cdr e)))))
+                             (and cs (exists (lambda (c) (bad? (car c))) cs)))))))
+              names)))
 
   ;; THE TEXTS OF ONE FIELD OF A BLOCK: a string, a UTF-8 bytevector decoded,
   ;; or, for a field two writers left at once, each candidate's. STATE and ID
@@ -1988,11 +1995,6 @@
                         (let* ((id (cadr (car ds)))
                                (block (state-read state id))
                                (alive (hashtable-ref live id #f))
-                               ;; READ BEFORE THIS BLOCK'S FIELDS, compared
-                               ;; after them: the process counter moves once
-                               ;; per failed decode, and what this needs is
-                               ;; whether it moved at all for THIS block.
-                               (decodes-before (text-decode-skipped-count))
                                (titles (field-strings state id block (quote title)))
                                (srcs (field-strings state id block (quote src)))
                                ;; KEY: KEYWORDS SCORE 3, ABOVE TITLE'S 2 AND
@@ -2084,11 +2086,12 @@
                                (names (map symbol->string (block-names state live id)))
                                (docs (derived-strings state live id (quote doc)))
                                (bodies (derived-strings state live id (quote body)))
-                               ;; EVERY FIELD OF THIS BLOCK HAS BEEN READ BY
-                               ;; HERE, including the derived ones, so this is
-                               ;; the point where the comparison is complete.
+                               ;; THIS BLOCK'S OWN FIELDS, asked of the block
+                               ;; and not of the process counter: the fields
+                               ;; field-strings decoded above (derived-strings
+                               ;; skips bytes without counting them).
                                (block-unreadable
-                                 (> (text-decode-skipped-count) decodes-before))
+                                 (pair? (undecodable-fields state id block stored-text-fields)))
                                (ignored-unreadable
                                  (when (and alive block-unreadable)
                                    (set! unreadable-here (+ unreadable-here 1))))
@@ -2336,13 +2339,12 @@
                (loop (cdr l) out shown omitted unseen scanned unreadable))
               (else
                 (let* ((id (car l))
-                       ;; Read before this block's text and compared after
-                       ;; it, exactly as the search loop does.
-                       (decodes-before (text-decode-skipped-count))
                        (lines (apply append
                                      (map lines-of-text (grep-text-of state live id))))
+                       ;; asked of the block, as the search loop does: grep
+                       ;; decodes src alone through field-strings
                        (block-unreadable
-                         (> (text-decode-skipped-count) decodes-before))
+                         (pair? (undecodable-fields state id (state-read state id) (quote (src)))))
                        (matching
                          (let scan ((ls lines) (n 1) (acc (quote ())))
                            (cond
