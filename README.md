@@ -715,6 +715,11 @@ It answers:
     (entry (event <writer> <seq>) (ts <ms>) (actor "<name>") (verb <verb>)
            (cut ((<writer> . <seq>) ...)) (past ((<writer> . <seq>) ...)))
 
+`verb` is the RECORD's verb -- `put`, `set`, `move`, `del`, `link`, `unlink`,
+`plan` and the others the log holds -- not the command that wrote it: `insert`
+and `import-md` show as `put`, and a `commit` as its `plan` followed by the
+records it planned (a `set` for a draft of a block's text).
+
 What this store has applied, in the order it was delivered. `cut` is the causal cut
 right after the event and `past` the one right before it: the event's premises,
 each with its own premises, and nothing a writer did without depending on it.

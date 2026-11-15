@@ -1349,7 +1349,7 @@
       (list 'discard '(discard <block> ["--writer" <name>])
             "Throw away a writer's draft of a block, or a structural draft by its key (a new file's provisional id, or delete- and the holder)." #f 'daemon)
       (list 'batch '(batch <intents> ["--premises" <datum>])
-            "Carry out several changes as one request." #f 'daemon)
+            "Carry out several changes as one request. The intents are one list read from standard input (the MCP tool takes them in stdin), e.g. ((set <id> title \"x\") (link <a> depends-on <b>)); each is (insert <parent> <predecessor> <fields>), (set <id> <field> [<value>]), (move <id> <parent> <predecessor>), (link <from> <rel> <to>), (unlink <from> <rel> <to>), (del <id>) or (tag <name>), and (from <n>) names the block intent n made; an intent with a subject may be wrapped as (expect <version> <intent>)." #f 'daemon)
       (list 'split-suggest '(split-suggest <file> ["--output" <review-file>] ["--symbols" <symbols-file>])
             "Propose where a long file could be divided into blocks. Nothing is written beside the file: the answer carries the review text, and --output writes it to the file named as well. With --symbols, the cuts come from an editor's list of the file's top-level symbols instead of the language's definition patterns; the answer's cuts-from says which." #f 'daemon)
       (list 'import-code import-code-usage
@@ -1401,7 +1401,7 @@
       (list 'changed-files '(changed-files <cut> <cut>)
             "List the files whose exported bytes or presence differ between two cuts, each as content, added or removed; a title, a level, a link or a language changes no file. Paths a case- or normalisation-insensitive volume would merge are listed as case-ambiguous or normalisation-ambiguous groups." #f 'daemon)
       (list 'conflicts '(conflicts)
-            "List blocks whose writers disagree." #f 'daemon)
+            "List what the store holds and cannot settle on its own: blocks in a structural conflict (a cycle, or unplaced), orphans whose parent was deleted or never arrived, records waiting for premises, nested documents, contested relation, rule and derive declarations, paths two live files hold, records this build cannot apply, and writers whose history was cut by damage. Two writers' values for one field are not listed here: read shows them as (conflict ...)." #f 'daemon)
       (list 'subscribe subscribe-usage
             "Follow the store's publications: <stream> is changes, and every publication after <rev> arrives as a line naming what changed, until the stream ends. 0 starts from now; a resume names the daemon token its acceptance gave." #f 'stream)
       (list 'scope scope-usage
