@@ -4334,7 +4334,11 @@ answer with an errno clause (`connect-failed`, `socket-dir-unreadable`,
 `detach-failed`, a commit's `cleanup-failed`), is the errno's name on this
 platform (`EACCES`, `EROFS`), the number only for an errno the platform's
 table does not name; a failure with no errno (a short write) has no errno
-clause.
+clause. A create is made by Chez, which raises most refusals with the OS's
+text and no number: the errno is then read back from that text through this
+process's own `strerror` over the platform's errnos (a create under a
+regular file is `ENOTDIR`, at a read-only root `EROFS`). A text that matches
+no errno still answers with no errno clause, its `reason` saying "no errno".
 
 An answer built from history the store could not wholly read carries an
 `incomplete` clause, one entry per writer it is missing:

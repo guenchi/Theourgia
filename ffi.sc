@@ -402,7 +402,7 @@
           process-environment reap-children! path-case-sensitive?
           fd-close-on-exec! fd-close-on-exec? online-processors mkdir-p-unrecorded!
           file-ensure-unrecorded!
-          process-id wall-clock-ms machine-home env-or libc-entry-name)
+          process-id wall-clock-ms machine-home env-or libc-entry-name condition-errno)
   (import (chezscheme)
           (only (igropyr platform)
                 platform-os ensure-supported-platform! load-first-shared-object!)
@@ -2286,8 +2286,12 @@
 
   ;; CHEZ'S OWN I/O CONDITIONS, MAPPED TO AN ERRNO where Chez did the
   ;; syscall (file-ensure!'s and file-create-exclusive!'s create, which
-  ;; cannot pass a mode through open(2)'s variadic argument). A condition
-  ;; with no class here keeps errno #f.
+  ;; cannot pass a mode through open(2)'s variadic argument). By its class
+  ;; first; a condition of no class here (Chez raises most refusals as a
+  ;; bare filename error: a read-only file system, a path through a regular
+  ;; file) is mapped BY THE OS'S OWN TEXT, the last irritant Chez gives it
+  ;; ("failed for ~a: ~(~a~)", irritants (<path> <text>)), through
+  ;; strerror-errnos below. A text that matches no errno keeps errno #f.
   (define EROFS (platform-number 'EROFS))
   (define (condition-errno e)
     ;; THE SUBTYPE FIRST: a read-only-file error is also a protection error,
@@ -2296,7 +2300,13 @@
           ((i/o-file-is-read-only-error? e) EROFS)
           ((i/o-file-protection-error? e) EACCES)
           ((i/o-file-already-exists-error? e) EEXIST)
-          (else #f)))
+          (else (os-text-errno e))))
+  ;; -> the errno whose strerror text is the condition's last irritant, or #f
+  (define (os-text-errno e)
+    (let ((irritants (and (condition? e) (irritants-condition? e) (condition-irritants e))))
+      (and (pair? irritants)
+           (let ((text (list-ref irritants (- (length irritants) 1))))
+             (and (string? text) (hashtable-ref strerror-errnos text #f))))))
 
   ;; CHEZ'S CONDITION FROM A NON-MUTATING STEP, as unreadable-entry naming
   ;; the path, the errno mapped where the class names one.
@@ -2371,6 +2381,17 @@
                 (errno-symbol? (caar cs)) (not (assv (cadar cs) out)))
            (loop (cdr cs) (cons (cons (cadar cs) (caar cs)) out)))
           (else (loop (cdr cs) out))))))
+  ;; THE OS'S TEXT FOR EVERY ERRNO THE PLATFORM'S ROW MEASURES, back to its
+  ;; number: this process's own strerror over errno-table, so the libc and
+  ;; the locale are the ones that wrote the text being read
+  ;; (condition-errno). Two errnos with one text keep the first.
+  (define strerror-errnos
+    (let ((h (make-hashtable string-hash string=?)))
+      (for-each (lambda (p)
+                  (let ((t (c-strerror (car p))))
+                    (unless (hashtable-contains? h t) (hashtable-set! h t (car p)))))
+                errno-table)
+      h))
   ;; -> the name of an errno: a name as it is, a number the table knows by
   ;; its name, any other number as it is, and #f for no errno (a caller
   ;; then writes no clause).
