@@ -4265,6 +4265,14 @@ needs both to say anything about a request it cannot find.
 
 A write with neither option behaves exactly as it did before and is not tracked.
 
+**The cursor takes part in what makes two requests the same.** A request's
+identity is its id and the writer its cursor names; its fingerprint, compared
+under that identity, is the actor, the verb, its arguments and the whole
+cursor. So the same `--req` with a cursor on ANOTHER WRITER is another request,
+and runs as one; on the SAME WRITER with another sequence it is the same
+identity with another fingerprint, and is answered `req-mismatch`. A client
+retrying a request sends the cursor it sent the first time.
+
 **The cursor is `--cursor <writer>:<sequence>`** and is parsed by shape.
 Anything else — no colon, an empty or non-numeric sequence — is `(error
 bad-request malformed-cursor)` (so is an empty writer, or a sequence of more than 18 digits). It is spelled `--cursor` and not `--after`
