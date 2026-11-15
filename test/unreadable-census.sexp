@@ -1362,6 +1362,11 @@
    unrelated a
    "defs index"
    (e (#t (set! defs-index-skipped (+ defs-index-skipped 1)) (quote ()))))
+  ("store.sc" (printed-datum-body) 1 guard
+   ((equal? x (quote (error unsupported-printer-version))))
+   unrelated a
+   "grep's printed datum body: the datum printer refuses a Chez it is not measured for with (error unsupported-printer-version), and the body is then read as its one-line spelling; that refusal alone is caught, and anything else the printer raises propagates; a projection's text, not a store entry"
+   (x ((equal? x (quote (error unsupported-printer-version))) (datum-spelling (cdr e)))))
   ("store.sc" (state-section) 1 guard
    (#t)
    unrelated c

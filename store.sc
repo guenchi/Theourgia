@@ -2298,11 +2298,13 @@
             (cdr src-read))))
   ;; -> a datum body as the datum projection prints it, or #f when the body
   ;; is absent, text or bytes. A printer this Chez is not measured for
-  ;; refuses; the body is then its one-line spelling, as before.
+  ;; refuses with (error unsupported-printer-version) (ffi.sc
+  ;; source-datum-print); the body is then its one-line spelling, as before.
+  ;; ONLY THAT REFUSAL: anything else the printer raises is not caught here.
   (define (printed-datum-body state live id)
     (let ((e (assq (quote body) (viewed-fields state live id))))
       (and e (not (string? (cdr e))) (not (bytevector? (cdr e)))
-           (guard (x (#t (datum-spelling (cdr e))))
+           (guard (x ((equal? x (quote (error unsupported-printer-version))) (datum-spelling (cdr e))))
              (source-datum-print (cdr e))))))
 
   ;; -> AN ALIST, NOT A TUPLE. The caller reads `items`, `omitted-lines`,
