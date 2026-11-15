@@ -2855,7 +2855,12 @@
            (ls (provided-open store #f)))
       (load-deliver! ls (quote ()) (collect-into r collected))
       (load-commit! ls)
-      (let ((applied (reduce-trace r)))
+      ;; THE APPLIED EVENTS AS A SET, made once: each entry asks whether it
+      ;; was applied, and a list searched per entry made the log quadratic in
+      ;; the number of records (F447).
+      (let ((applied (let ((t (make-hashtable equal-hash equal?)))
+                       (for-each (lambda (e) (hashtable-set! t e #t)) (reduce-trace r))
+                       t)))
         (if (and id (not (known? r id)))
             (list (quote error) (quote unknown-id) id
                   (list (quote nearest) (nearest-ids r id)))
@@ -2867,8 +2872,7 @@
                         ;; EACH ENTRY WITH ITS CAUSAL COORDINATES, taken while
                         ;; this reduction is in hand: (entry cut past), the
                         ;; causal cut right after the event and right before it.
-                        ((and (member (cons (entry-writer (car es)) (entry-seq (car es)))
-                                      applied)
+                        ((and (hashtable-ref applied (cons (entry-writer (car es)) (entry-seq (car es))) #f)
                               (or (not id) (touches? (car es) id)))
                          (let ((event (cons (entry-writer (car es)) (entry-seq (car es)))))
                            (loop (cdr es) (cons (list (car es) (state-event-cut r event) (state-event-past r event))

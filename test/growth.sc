@@ -24,6 +24,7 @@
 ;;         reads about 2, one that asks a whole-store question per file about 4.
 ;;         The arms are interleaved and each is read by its smallest of three,
 ;;         so a load that moves meanwhile falls on both. Wall time is not used.
+;;         log lists every entry, each asked whether it was applied (F447).
 ;;         read's block id is found before the timing (it was once found inside
 ;;         it, by an outline, and read measured outline). UNDER THE
 ;;         DEGENERACY SWITCH export-code, changed-files and outline are printed
@@ -125,6 +126,8 @@
         (cons 'export-code (lambda (st) (rpc-dispatch st (list 'export-code (out-dir)) "test")))
         (cons 'changed-files (lambda (st) (rpc-dispatch st '(changed-files "t0" "t1") "test")))
         (cons 'outline (lambda (st) (rpc-dispatch st '(outline) "test")))
+        ;; log, every entry of the store: each asks whether it was applied (F447)
+        (cons 'log (lambda (st) (rpc-dispatch st '(log) "test")))
         (cons 'read (let ((ids (map (lambda (st) (cons st (or (some-code-id st) "no-such-block")))
                                     (list empty small large))))
                       (lambda (st) (rpc-dispatch st (list 'read (cdr (assoc st ids))) "test"))))))
