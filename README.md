@@ -4550,12 +4550,6 @@ must read to its end, and nothing anywhere — including records set aside as
 superseded — may mention an item said to be missing. Failing any of those the
 answer is `unknown` with the reason, never `partial`.
 
-A tracked batch sent again whose state is `partial` answers `(error partial
-(applied <k>) (next <k>) (present (<i> ...)))`: `present` the indices on disk, a
-prefix, so `applied` and `next`, the first item not run, are both its length.
-One whose state is `planned` answers the same fields with that name, `(error
-planned (applied 0) (next 0) (present ()))`.
-
 ### What the machine registry records
 
 Two frontiers per `(store-id, instance, writer)`, and they are not the same

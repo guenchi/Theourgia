@@ -4838,19 +4838,15 @@
       ((unknown) (cons 'error (cons 'unknown (cdr verdict))))
       ((req-mismatch) (cons 'error (cons 'req-mismatch (cdr verdict))))
       ((resolved-executed) (cons 'error (cons 'resolved-executed (cdr verdict))))
-      ;; A PREFIX OF THE BATCH IS ON DISK AND THE REST PROVABLY DID NOT
-      ;; RUN (request.sc batch-progress). It answered `unknown` through the
-      ;; else arm below, which told a client holding the request less than
-      ;; the store had established. The judgement carries the indices on
-      ;; disk, a prefix, so the count applied is also the first item not
-      ;; applied; how many items the batch had is not in it. PLANNED IS THE
-      ;; SAME CLAIM WITH NO ITEM ON DISK, and answers with the same fields,
-      ;; the head the state's name.
-      ((partial)
-       (let ((present (cadr verdict)))
-         (list 'error 'partial (list 'applied (length present)) (list 'next (length present))
-               (list 'present present))))
-      ((planned) (list 'error 'planned (list 'applied 0) (list 'next 0) (list 'present '())))
+      ;; PARTIAL AND PLANNED ARE NOT ANSWERED: each says the rest of the batch
+      ;; provably did not run, and the judgement cannot know it yet. A writer
+      ;; chain cut in a sealed segment, or missing a segment, past the receipt
+      ;; reaches the load as an `incomplete` cut and not as an uncertain
+      ;; interval, and request.sc's chain-readable? is the constant #t here,
+      ;; so nothing stood between the cut and the claim (test/batch-partial.sc
+      ;; BP-4, BP-5). Until the judgement reads the cut, both answer unknown
+      ;; with what the store saw: the indices on disk, for partial.
+      ((partial planned) (cons 'error (cons 'unknown (cdr verdict))))
       (else (cons 'error (cons 'unknown (cdr verdict))))))
 
   ;; THE BARRIER GOES WHERE THE RECORD IS, not where the writer happens
