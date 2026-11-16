@@ -425,6 +425,18 @@
       (list (and (pair? sb8-load) (eq? (car sb8-load) 'RAISED)) (and (made? sb8-reader) (memory-remembered-bytes sb8-reader)))
       (list #f 0))
 
+;; ---- SB-14: the overlay's limit is one count of bytes ----------------------------
+;; +inf.0, a negative count and two limits are each refused when the reader is
+;; made, as make-load-memory refuses them, and no reader is made.
+(define (refused? thunk) (let ((r (caught (thunk)))) (and (pair? r) (eq? (car r) 'RAISED))))
+(want "SB-14 copy-reading-memory refuses +inf.0, -1 and two limits; it accepts one exact count"
+      (let ((c (memory-copy (make-load-memory 0))))
+        (list (refused? (lambda () (copy-reading-memory c +inf.0)))
+              (refused? (lambda () (copy-reading-memory c -1)))
+              (refused? (lambda () (copy-reading-memory c 10 20)))
+              (refused? (lambda () (copy-reading-memory c 10)))))
+      '(#t #t #t #f))
+
 ;; ---- SB-9, SB-10: loads on a copy read the disk's bytes, and leave the copy as it was --
 ;; A copy of a memory that read the whole store; then two loads on it (each a
 ;; reader of its own), and a segment replaced IN PLACE with other bytes of the

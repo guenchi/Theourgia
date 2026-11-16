@@ -1202,6 +1202,11 @@
   ;; one that does not fit is decoded and not kept. Held is the copy's and the
   ;; overlay's together.
   (define (copy-reading-memory c . limit)
+    ;; THE LIMIT IS A COUNT OF BYTES, as make-load-memory's: at most one, an
+    ;; exact non-negative integer (store-copy.sc SB-14)
+    (unless (or (null? limit)
+                (and (null? (cdr limit)) (integer? (car limit)) (exact? (car limit)) (>= (car limit) 0)))
+      (assertion-violation 'copy-reading-memory "the limit must be one count of bytes" limit))
     (let ((table (remembered-copy-table c))
           (overlay (make-hashtable equal-hash equal?))
           (limit (if (pair? limit) (car limit) load-memory-default-limit))

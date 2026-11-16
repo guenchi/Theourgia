@@ -3903,9 +3903,11 @@
     (unless (procedure? procedure)
       (assertion-violation 'store-memory-provider! "not a procedure" procedure))
     (set! memory-provider procedure))
-  ;; HANDED, a publication's copy and its name: the load reads the copy
-  ;; (copy-reading-memory), whatever the provider answers, and one trace line
-  ;; says so, naming the publication.
+  ;; HANDED, a publication's copy and its name. Three ways, in order: where
+  ;; memory-provider answers a memory, the load uses it; else, where a copy
+  ;; was handed, the load reads the copy (copy-reading-memory) and one trace
+  ;; line says so, naming the state's publication and the copy's own; else the
+  ;; load makes a memory of its own.
   ;; THE STORE PROCESS KEEPS ITS LIVE MEMORY (rule 4): where memory-provider
   ;; answers one, that process's loads use it even when a copy was handed (a
   ;; published read sealed with the cell's copy reaches a store-process load
