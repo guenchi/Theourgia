@@ -35,7 +35,7 @@
 ;; The daemon harness is store-memory.sc's (a hand-built store: writer W, eight
 ;; records in three segments).
 (import (chezscheme) (theourgia log) (theourgia wire) (theourgia reduce) (theourgia trace)
-        (only (theourgia store) open-and-reduce store-memory-provider! store-memory-copy)
+        (only (theourgia store) open-and-reduce open-and-reduce-reading store-memory-provider! store-memory-copy)
         (only (theourgia digest) sha256 bytevector->hex)
         (only (theourgia client) socket-path serve-log-path))
 
@@ -257,6 +257,9 @@
 (define (scanned-of ls) (map (lambda (c) (and (list? c) (list-ref c 3))) (load-counts ls)))
 ;; the publication each load-on-copy line names
 (define (copy-names ls) (map (lambda (l) (let ((d (read-or-false l))) (and d (caddr d)))) (lines-with ls "(trace load-on-copy")))
+;; the publication the copy itself was made for, beside the state's on the same line
+(define (copy-own-names ls)
+  (map (lambda (l) (let ((d (read-or-false l))) (and d (pair? (cdddr d)) (cadddr d)))) (lines-with ls "(trace load-on-copy")))
 (define (routed-writer? ls) (pair? (lines-with ls "(trace routed write writer)")))
 ;; how the memory answered segment SEG of W, in order, per memory line
 (define (memory-answers ls seg)
@@ -383,6 +386,140 @@
               (and a b (not (eq? (list-ref a 1) (list-ref b 1))))))
       '(#t new remembered #t))
 
+;; ---- SB-6: the store process keeps its live memory (rule 4) ------------------------
+;; In this process, with a memory provided as the store process's is, a load
+;; HANDED a copy (as a published read sealed with the cell's copy reaches a
+;; store-process load through working-view-of) still uses the live memory:
+;; after it, the live memory holds the segments the load read.
+(build-store!)
+(define sb6-live (make-load-memory))
+(define sb6-copy (memory-copy (make-load-memory 0)))
+(store-memory-provider! (lambda () sb6-live))
+(define sb6-load (caught (open-and-reduce-reading store (cons sb6-copy "a publication"))))
+(store-memory-provider! (lambda () #f))
+(want "SB-6 a load handed a copy where a live memory is provided reads the live memory: it now holds the store's three segments"
+      (list (reduction? sb6-load) (memory-remembered-bytes sb6-live)
+            (+ (bytevector-length (segment-bytes 1)) (bytevector-length (segment-bytes 2)) (bytevector-length (segment-bytes 3))))
+      (let ((n (+ (bytevector-length (segment-bytes 1)) (bytevector-length (segment-bytes 2)) (bytevector-length (segment-bytes 3)))))
+        (list #t n n)))
+
+;; ---- SB-7, SB-8: a copy reader's overlay is bounded per load -----------------------
+;; A reader of a copy of an EMPTY memory decodes every segment itself; its
+;; overlay keeps one only while it fits its own limit (S2's per-load bound,
+;; here set small through the reader's limit argument), and one that does not
+;; fit is decoded and not kept. Held is the copy's (0) and the overlay's.
+(build-store!)
+(define sb7-limit (bytevector-length (segment-bytes 1)))
+;; the reader is made inside `caught`: a build whose reader takes no limit
+;; answers RAISED here, a red row, rather than stopping the fixture
+(define (made? x) (not (and (pair? x) (eq? (car x) 'RAISED))))
+(define sb7-reader (caught (copy-reading-memory (memory-copy (make-load-memory 0)) sb7-limit)))
+(define sb7-load (if (made? sb7-reader) (caught (log-open-with-memory store sb7-reader)) sb7-reader))
+(want "SB-7 a copy reader whose overlay limit is one segment's bytes keeps at most that, over a log of three segments, and the load opens"
+      (list (and (pair? sb7-load) (eq? (car sb7-load) 'RAISED))
+            (and (made? sb7-reader) (memory-remembered-bytes sb7-reader)) sb7-limit)
+      (list #f sb7-limit sb7-limit))
+(define sb8-reader (caught (copy-reading-memory (memory-copy (make-load-memory 0)) 0)))
+(define sb8-load (if (made? sb8-reader) (caught (log-open-with-memory store sb8-reader)) sb8-reader))
+(want "SB-8 a copy reader whose overlay limit is 0 keeps nothing, and the load opens"
+      (list (and (pair? sb8-load) (eq? (car sb8-load) 'RAISED)) (and (made? sb8-reader) (memory-remembered-bytes sb8-reader)))
+      (list #f 0))
+
+;; ---- SB-9, SB-10: loads on a copy read the disk's bytes, and leave the copy as it was --
+;; A copy of a memory that read the whole store; then two loads on it (each a
+;; reader of its own), and a segment replaced IN PLACE with other bytes of the
+;; same length: a load on the copy reads the replaced bytes, not the copy's.
+;; Each load's state is compared with a plain load's (state-hash).
+(build-store!)
+(define sb9-memory (make-load-memory))
+(store-memory-provider! (lambda () sb9-memory))
+(caught (open-and-reduce store))
+(define sb9-copy (store-memory-copy))
+(store-memory-provider! (lambda () #f))
+(define sb9-before (memory-copy-entries sb9-copy))
+(define (copy-state c) (caught (open-and-reduce-reading store (cons c "sb-9"))))
+(define sb9-a (copy-state sb9-copy))
+(define sb9-b (copy-state sb9-copy))
+(define sb9-plain (caught (open-and-reduce store)))
+(want "SB-9 two loads on one copy each read the store as a plain load does, and the copy is as it was taken"
+      (list (and (reduction? sb9-a) (reduction? sb9-plain) (equal? (state-hash sb9-a) (state-hash sb9-plain)))
+            (and (reduction? sb9-b) (equal? (state-hash sb9-b) (state-hash sb9-plain)))
+            (same-entries? sb9-before (memory-copy-entries sb9-copy)))
+      '(#t #t #t))
+(let ((old (segment-bytes 3)))
+  (put! (segment-path 3) (records 7 8 "y"))
+  (printf "SB-10 segment 3 replaced in place: ~s bytes -> ~s bytes\n" (bytevector-length old) (bytevector-length (segment-bytes 3))))
+(define sb10-copied (copy-state sb9-copy))
+(define sb10-plain (caught (open-and-reduce store)))
+(want "SB-10 a segment replaced in place with other bytes of the same length: a load on the copy reads the new bytes, as a plain load does"
+      (list (and (reduction? sb10-copied) (reduction? sb10-plain)
+                 (equal? (state-hash sb10-copied) (state-hash sb10-plain)))
+            (and (reduction? sb10-plain) (reduction? sb9-plain) (not (equal? (state-hash sb10-plain) (state-hash sb9-plain)))))
+      '(#t #t))
+
+;; ---- SB-11: a segment grown since the copy is extended from it --------------------
+;; The copy holds segment 3 as it was; a record is appended to it on disk. A
+;; load on the copy extends the copy's transcript (the extension branch) and
+;; must read the store as a plain load does, the appended record included.
+(build-store!)
+(define sb11-memory (make-load-memory))
+(store-memory-provider! (lambda () sb11-memory))
+(caught (open-and-reduce store))
+(define sb11-copy (store-memory-copy))
+(store-memory-provider! (lambda () #f))
+(put! (segment-path 3) (cat (segment-bytes 3) (record 9 "w-9")))
+(define sb11-copied (copy-state sb11-copy))
+(define sb11-plain (caught (open-and-reduce store)))
+(want "SB-11 segment 3 grown by one record after the copy: a load on the copy reads it as a plain load does, and the copy is unchanged"
+      (list (and (reduction? sb11-copied) (reduction? sb11-plain)
+                 (equal? (state-hash sb11-copied) (state-hash sb11-plain)))
+            (let ((e (entry-at (memory-copy-entries sb11-copy) (cons W 3))))
+              (and e (= (bytevector-length (list-ref e 1)) (- (bytevector-length (segment-bytes 3)) (bytevector-length (record 9 "w-9")))))))
+      '(#t #t))
+
+;; ---- SB-12: a reader over a copy entry that was hashed, never scanned --------------
+;; As SB-4: M2's manifest names a wrong hash when the copy is taken, so the
+;; copy's entry for it was hashed and never scanned. The manifest is corrected
+;; and a load ON THE COPY scans the segment: it must answer as a plain load
+;; does and must leave the copy's entry as it was (not completed in place).
+(build-store!)
+(system (string-append "mkdir -p '" m2-dir "'"))
+(put! (string-append m2-dir "/" (segment-file-name 1)) m2-bytes)
+(m2-manifest! (make-string 64 #\0))
+(define sb12-memory (make-load-memory))
+(store-memory-provider! (lambda () sb12-memory))
+(caught (open-and-reduce store))
+(define sb12-copy (store-memory-copy))
+(store-memory-provider! (lambda () #f))
+(define sb12-before (memory-copy-entries sb12-copy))
+(m2-manifest! (bytevector->hex (sha256 m2-bytes)))
+(define sb12-copied (copy-state sb12-copy))
+(define sb12-plain (caught (open-and-reduce store)))
+(want "SB-12 a load on a copy whose entry was hashed and never scanned: it reads as a plain load does, and the copy's entry is still unscanned"
+      (list (and (reduction? sb12-copied) (reduction? sb12-plain)
+                 (equal? (state-hash sb12-copied) (state-hash sb12-plain)))
+            (same-entries? sb12-before (memory-copy-entries sb12-copy))
+            (let ((e (entry-at (memory-copy-entries sb12-copy) (cons M2 1)))) (and e (list-ref e 3))))
+      '(#t #t new))
+
+;; ---- SB-13: a segment truncated since the copy, met by a reader --------------------
+;; Segment 3 loses its last record on disk after the copy was taken. Whatever a
+;; plain load answers (a state or a refusal), a load on the copy answers the same.
+(build-store!)
+(define sb13-memory (make-load-memory))
+(store-memory-provider! (lambda () sb13-memory))
+(caught (open-and-reduce store))
+(define sb13-copy (store-memory-copy))
+(store-memory-provider! (lambda () #f))
+(put! (segment-path 3) (records 7 7 "w"))
+(define (outcome x) (if (reduction? x) (list 'state (state-hash x)) x))
+(define sb13-copied (outcome (copy-state sb13-copy)))
+(define sb13-plain (outcome (caught (open-and-reduce store))))
+(printf "SB-13 plain ~s\n" sb13-plain)
+(want "SB-13 segment 3 truncated by one record after the copy: a load on the copy answers as a plain load does"
+      (equal? sb13-copied sb13-plain)
+      #t)
+
 ;; ---- SB-5: the copy and the state are one publication's ---------------------------
 (build-store!)
 (printf "SB-5 the daemon: ~s\n" (start-daemon! ""))
@@ -392,14 +529,15 @@
 (define sb5b (save! id5 "sb-5 b"))
 (printf "SB-5 first save on ~s; the commit ~s published ~s; second save on ~s\n"
         (copy-names (cdr sb5a)) (car sb5c) (published-seqs (cdr sb5c)) (copy-names (cdr sb5b)))
-(want "SB-5 a commit between two saves: the second save's loads name the publication the commit made, the first's the one before it"
+(want "SB-5 a commit between two saves: the second save's loads name the publication the commit made, the first's the one before it, and each load's copy is the copy of the publication its state came from"
       (let ((a (copy-names (cdr sb5a))) (b (copy-names (cdr sb5b))) (p (published-seqs (cdr sb5c))))
         (list (and (pair? (car sb5c)) (car (car sb5c)))
+              (equal? (append a b) (append (copy-own-names (cdr sb5a)) (copy-own-names (cdr sb5b))))
               (and (= 2 (length a)) (equal? (car a) (cadr a)))
               (and (= 2 (length b)) (equal? (car b) (cadr b)))
               (and (pair? b) (pair? p) (eqv? (car (car b)) (car (reverse p))))
               (and (pair? a) (pair? b) (< (car (car a)) (car (car b))))))
-      '(ok #t #t #t #t))
+      '(ok #t #t #t #t #t))
 (stop-daemon!)
 
 (set! cleaned? #t)
