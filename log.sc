@@ -52,7 +52,7 @@
 
 (library (theourgia log)
   (export directory-entry-durable! present-or-unreadable-skip?
-          discover-prefix memory-copy copy-reading-memory memory-copy-entries
+          discover-prefix memory-copy copy-reading-memory memory-copy-entries memory-copy-name memory-copy-named!
           discovery? discovery-origin discovery-end-segment discovery-end-offset discovery-end-seq
           discovery-segment-ranges discovery-physical-current discovery-current-buffer
           discovery-torn discovery-integrity discovery-quarantine discovery-retired quarantine-of
@@ -1053,9 +1053,12 @@
             (mutable has-digest) (mutable digest)
             (mutable has-edges) (mutable edges)))
 
+  ;; A LOAD'S OWN MEMORY'S DEFAULT BOUND, in remembered bytes: S2's per-load
+  ;; memory, and the overlay a copy's reader keeps (copy-reading-memory).
+  (define load-memory-default-limit (* 256 1024 1024))
   (define make-load-memory
     (case-lambda
-      (() (make-load-memory (* 256 1024 1024)))
+      (() (make-load-memory load-memory-default-limit))
       ((limit)
        (unless (and (integer? limit) (exact? limit) (>= limit 0))
          (assertion-violation 'make-load-memory "the limit must be a count of bytes" limit))
@@ -1123,7 +1126,7 @@
                                        (memory-entry-has-digest e) (memory-entry-digest e)
                                        (memory-entry-has-edges e) (memory-entry-edges e))))
                 keys held-entries))
-            (make-remembered-copy table held))))))
+            (make-remembered-copy table held #f))))))
 
   ;; ONE SEGMENT ANSWERED FROM ENTRY E, as a scan of these bytes would answer
   ;; it: the transcript replayed, and what it lacks decoded (remembered-scan),
@@ -1151,7 +1154,12 @@
       outcome))
 
   ;; A COPY OF A MEMORY: its table and the bytes it held when made.
-  (define-record-type remembered-copy (fields table held))
+  ;; NAME is the publication the copy was made for (publish! names it), #f
+  ;; until named: a load on the copy traces the copy's own name, so a copy
+  ;; sealed beside another publication's state shows (store-copy.sc SB-5).
+  (define-record-type remembered-copy (fields table held (mutable name)))
+  (define (memory-copy-name c) (and (remembered-copy? c) (remembered-copy-name c)))
+  (define (memory-copy-named! c name) (when (remembered-copy? c) (remembered-copy-name-set! c name)) c)
 
   ;; -> a copy of what memory M remembers, or #f when it keeps nothing
   (define (memory-copy m) ((segment-memory-copy m)))
@@ -1187,9 +1195,17 @@
   ;; switch). Nothing is inserted, replaced or set in the copy: what the
   ;; overlay's entries decode, and the digests and edges they compute, are the
   ;; overlay's. Its own copy is #f: a copy of a copy is never made.
-  (define (copy-reading-memory c)
+  ;; THE OVERLAY IS BOUNDED AS S2'S PER-LOAD MEMORY IS: LIMIT, when given, else
+  ;; load-memory-default-limit, independent of the store process's own limit
+  ;; (a copy of an empty memory must not make each writer load decode twice).
+  ;; An entry is kept only while it fits; a replaced one gives its bytes back;
+  ;; one that does not fit is decoded and not kept. Held is the copy's and the
+  ;; overlay's together.
+  (define (copy-reading-memory c . limit)
     (let ((table (remembered-copy-table c))
-          (overlay (make-hashtable equal-hash equal?)))
+          (overlay (make-hashtable equal-hash equal?))
+          (limit (if (pair? limit) (car limit) load-memory-default-limit))
+          (overlay-held 0))
       ;; the entry from SOURCE (an overlay or copy entry, or #f) for BYTES
       (define (entry-from e bytes)
         (let ((kept (and e (memory-entry-bytes e))))
@@ -1208,7 +1224,12 @@
                (mine (and o (or (eq? (memory-entry-bytes o) bytes) (bytevector=? (memory-entry-bytes o) bytes)) o)))
           (or mine
               (let ((fresh (entry-from (or o (hashtable-ref table key #f)) bytes)))
-                (hashtable-set! overlay key fresh)
+                (when o
+                  (hashtable-delete! overlay key)
+                  (set! overlay-held (- overlay-held (bytevector-length (memory-entry-bytes o)))))
+                (when (<= (+ overlay-held (bytevector-length bytes)) limit)
+                  (hashtable-set! overlay key fresh)
+                  (set! overlay-held (+ overlay-held (bytevector-length bytes))))
                 fresh))))
       (make-segment-memory
         (lambda (phase writer seg bytes expected-seq recoverable-tail? deliver note)
@@ -1228,7 +1249,7 @@
               (memory-entry-edges-set! e (segment-edge-seqs bytes))
               (memory-entry-has-edges-set! e #t))
             (memory-entry-edges e)))
-        (lambda () (remembered-copy-held c))
+        (lambda () (+ (remembered-copy-held c) overlay-held))
         (lambda () #f)
         (lambda () #f))))
 

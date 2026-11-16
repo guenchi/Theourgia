@@ -51,7 +51,7 @@
           (rnrs arithmetic fixnums) (rnrs unicode) (rnrs bytevectors) (rnrs hashtables)
           (only (rnrs records syntactic) define-record-type fields mutable)
           (only (theourgia log)
-                log-open log-open-with-memory log-begin-with-memory memory-copy copy-reading-memory load-deliver! load-commit! load-fingerprint remember-load-unreadable!
+                log-open log-open-with-memory log-begin-with-memory memory-copy copy-reading-memory memory-copy-name memory-copy-named! load-deliver! load-commit! load-fingerprint remember-load-unreadable!
                 load-unreadable session-load
                 unreadable-behind merge-unreadable
                 tell-load-notes! tell-load-refused! load-declaration-of
@@ -3896,7 +3896,8 @@
   ;; store-loop), so a table the loads change is never reached from two
   ;; processes. replay, store-log, store-check, store-position, a write's
   ;; session and a snapshot's session ask it; the loads in writer processes
-  ;; (working.sc) do not, and keep S2's memory.
+  ;; (working.sc) get #f here and read the publication's copy of it when one
+  ;; is handed (provided-open, copy-reading-memory), else a memory of their own.
   (define memory-provider (lambda () #f))
   (define (store-memory-provider! procedure)
     (unless (procedure? procedure)
@@ -3905,20 +3906,29 @@
   ;; HANDED, a publication's copy and its name: the load reads the copy
   ;; (copy-reading-memory), whatever the provider answers, and one trace line
   ;; says so, naming the publication.
+  ;; THE STORE PROCESS KEEPS ITS LIVE MEMORY (rule 4): where memory-provider
+  ;; answers one, that process's loads use it even when a copy was handed (a
+  ;; published read sealed with the cell's copy reaches a store-process load
+  ;; through working-view-of); a handed copy is read only where the provider
+  ;; answers #f, a writer process (test/store-copy.sc SB-6).
   (define (provided-open store declaration . handed)
-    (let ((h (and (pair? handed) (car handed))))
-      (if h
-          (begin
-            (trace-event! 'load-on-copy (cdr h) #f)
-            (log-open-with-memory store (copy-reading-memory (car h)) declaration))
-          (let ((m (memory-provider)))
-            (if m (log-open-with-memory store m declaration) (log-open store declaration))))))
+    (let ((h (and (pair? handed) (car handed)))
+          (m (memory-provider)))
+      (cond
+        (m (log-open-with-memory store m declaration))
+        ;; the state's publication beside the copy's own: equal unless the copy
+        ;; was sealed beside another publication's state (SB-5)
+        (h (trace-event! 'load-on-copy (cdr h) (memory-copy-name (car h)))
+           (log-open-with-memory store (copy-reading-memory (car h)) declaration))
+        (else (log-open store declaration)))))
   ;; THE STORE PROCESS'S MEMORY, COPIED (log.sc memory-copy): asked by publish!,
   ;; which runs in the store process; the provider answers the memory to that
   ;; process alone, so anywhere else this is #f.
-  (define (store-memory-copy)
+  ;; NAME, when given: the publication the copy is made for, carried by the copy
+  (define (store-memory-copy . name)
     (let ((m (memory-provider)))
-      (and m (memory-copy m))))
+      (and m (let ((c (memory-copy m)))
+               (if (and c (pair? name)) (memory-copy-named! c (car name)) c)))))
   (define (provided-begin store on-deliver)
     (let ((m (memory-provider)))
       (if m (log-begin-with-memory store m on-deliver) (log-begin store on-deliver))))

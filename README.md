@@ -5253,9 +5253,10 @@ it publishes (a new table, a new record per entry, the bytes and transcripts sha
 the writer process's loads READ that copy, the one that came with the state it was given:
 what the copy holds is replayed, a segment grown since is extended from it, anything
 else is decoded, and nothing is ever stored into the copy. Such a load writes `(trace
-load-on-copy (<revision> <token>) #f)`, naming the publication. A command line, and a
+load-on-copy (<revision> <token>) (<revision> <token>))`, naming the publication its state
+came from and then the one its copy was made for, which are the same. A command line, and a
 tool's fold, load with a memory of their own. `--memory-limit <bytes>`
-bounds it, in remembered segment bytes (default 268435456, 256 MiB; a daemon an MCP
+bounds the store process's memory, in remembered segment bytes (default 268435456, 256 MiB; a daemon an MCP
 shell or a client starts uses the default). The bound is first come, first kept, with
 no eviction: a segment is kept when it fits beside what is kept; one that does not fit
 is not kept and is decoded at every load, twice (validation and delivery), as without a
@@ -5272,13 +5273,20 @@ entries the store process has since replaced (a segment that grew, bytes replace
 long as something holds it: the current publication, and every sealed state a request
 in flight was handed. So the bound on that extra heap is the publications still
 referenced, at most the current one and the ones requests in flight took, each no larger
-than the memory it was copied from. A value that is not a count is refused like
+than the memory it was copied from. A WRITER PROCESS'S LOAD keeps, beside the copy it
+reads, an overlay of what it decoded itself (a segment the copy lacks, grown or replaced
+since), bounded on its own at 256 MiB of segment bytes per load, whatever
+`--memory-limit` says: a segment that does not fit beside what the overlay keeps is
+decoded and not kept, as a load without a memory decodes it; the overlay is gone when the
+load ends. So a writer-process load adds at most 256 MiB of bytes (about 525 MiB of heap)
+beside the store process's `--memory-limit`, and loads in flight at once each add their
+own. A value that is not a count is refused like
 `--session-size`'s. With `THEOURGIA_TRACE=1` each
 load writes one line, `(trace load-memory (replayed-or-extended <n> scanned <n>) #f)`,
 counting the segment asks its memory answered each way. WHAT A LOAD DELIVERS IS SHARED:
 a record's actor, dependencies and encoded payload, and the strings inside them, are the
 memory's own objects, handed again by every later load of the store process for as long as
-it runs. A consumer of a delivery (a reducer, a collector, anything reading a published
+it runs, and by every writer-process load reading a copy of it. A consumer of a delivery (a reducer, a collector, anything reading a published
 state) must not change them; under `THEOURGIA_DEGENERACY` a consumer that does is named
 (`degeneracy: a consumer changed a value it was delivered`).
 

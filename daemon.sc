@@ -2186,7 +2186,7 @@
       (if (and old (pair? subscribers))
           (frame! old state seq)
           (set! published-sets #f))
-      (set! published (vector state seq snapshot (list seq daemon-token) (store-memory-copy)))
+      (set! published (vector state seq snapshot (list seq daemon-token) (store-memory-copy (list seq daemon-token))))
       (note-known-segments! snapshot)
       (trace-event! 'published seq #f)))
 
@@ -2823,9 +2823,10 @@
          ;; caught -- by the commit, under the lock. NOT EVERY VERB OF THIS
          ;; PROCESS DOES: `write --expect`, `--based-on`, `--working-cut`,
          ;; `--working-parent`, `restore` and `drafts` with a diagnostics
-         ;; table fold afresh here (working.sc's open-and-reduce calls), each a
-         ;; load with a memory of its own, under a shared lock taken through
-         ;; main's lock service.
+         ;; table fold afresh here (working.sc's open-and-reduce-reading calls),
+         ;; each a load reading the publication's copy of the store process's
+         ;; memory with an overlay of its own (store.sc provided-open), under a
+         ;; shared lock taken through main's lock service.
          (with-ticket ticket
           (lambda ()
            (if (executing? main-pid ticket)
