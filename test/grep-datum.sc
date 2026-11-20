@@ -87,12 +87,13 @@
 (define (index-of pred xs) (let loop ((xs xs) (k 1)) (cond ((null? xs) #f) ((pred (car xs)) k) (else (loop (cdr xs) (+ k 1))))))
 
 (define form "(define (k)\n  (list 'alpha-element 'beta-element 'gamma-element 'delta-element\n        'needle 'epsilon-element 'zeta-element))\n")
-(define (store-with-file! datum?)
+(define (store-with-file! datum? . text)
   (set! n-store (+ n-store 1))
   (let ((d (string-append root "/s" (number->string n-store))) (src (string-append root "/src" (number->string n-store))))
     (run d "" "init")
     (system (string-append "mkdir -p '" src "'"))
-    (call-with-output-file (string-append src "/k.scm") (lambda (p) (display form p)))
+    (call-with-output-file (string-append src "/k.scm")
+      (lambda (p) (display (if (pair? text) (car text) form) p)))
     (if datum? (run d "" "import-code" src "--datum") (run d "" "import-code" src))
     d))
 
@@ -110,9 +111,43 @@
         (list 1 (let ((k (index-of (lambda (l) (contains? l "needle")) ls))) (list k (list-ref ls (- k 1)))) #t)))
 
 (define dt (store-with-file! #f))
+;; A WORD PAST ASCII (GD-3, GD-4): the export escapes it, and grep reads the
+;; body with it as it is written, so the word is found, and search agrees.
+(define wide-form "(define (greet)\n  (list \"na\x00ef;ve caf\x00e9;\" 'other))\n")
+(define dw (store-with-file! #t wide-form))
+(define wide (hits (run dw "" "grep" "na\x00ef;ve")))
+(printf "grep na\x00ef;ve over the datum block: ~s\n" wide)
+(want "GD-3 grep finds a word past ASCII in a datum body, on its printed line"
+      (and (pair? wide) (pair? (car wide)) (string? (caddr (car wide)))
+           (contains? (caddr (car wide)) "na\x00ef;ve caf\x00e9;"))
+      #t)
+(want "GD-4 grep and search agree on that word: both name the one datum block"
+      (let ((sr (run dw "" "search" "na\x00ef;ve")))
+        (list (map car wide)
+              (let ((i (and (list? sr) (assq 'items (filter pair? (cdr sr))))))
+                (if i (map (lambda (x) (if (pair? x) (cadr x) x)) (cdr i)) (list 'no-items sr)))))
+      ;; exactly one block, named by both: two empty answers do not agree
+      (if (= 1 (length wide)) (let ((ids (map car wide))) (list ids ids)) '(one-block one-block)))
+
 (want "GD-2 CONTROL: in a text block the match is its source line, line 3 of the file"
       (map cdr (hits (run dt "" "grep" "needle")))
       '((3 "        'needle 'epsilon-element 'zeta-element))")))
+
+;; GD-5, A DATUM BODY THAT IS A STRING OR A BYTEVECTOR is printed as the export
+;; prints it (datum-print): the string as its literal "...", the bytevector as
+;; #vu8(...), on body line 1 (codex round (g)).
+(set! n-store (+ n-store 1))
+(define d5 (string-append root "/s" (number->string n-store)))
+(run d5 "" "init")
+(define b5 (run d5 "((insert root #f ((kind . code) (mode . datum) (body . \"zqneedle\"))) (insert root #f ((kind . code) (mode . datum) (body . #vu8(7 8 9)))))" "batch"))
+(printf "GD-5 the batch: ~s\n" b5)
+(define g5s (hits (run d5 "" "grep" "\"zqneedle\"")))
+(define g5b (hits (run d5 "" "grep" "#vu8(7 8 9)")))
+(printf "GD-5 grep of the quoted string: ~s; of the bytevector: ~s\n" g5s g5b)
+(want "GD-5 a datum body that is a string is found as its printed literal, and a bytevector body as #vu8(...), each on body line 1"
+      (list (and (pair? g5s) (pair? (car g5s)) (cadr (car g5s)))
+            (and (pair? g5b) (pair? (car g5b)) (cadr (car g5b))))
+      '(1 1))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\ngrep-datum complete\n" bad rows-run)

@@ -121,13 +121,6 @@
     (when (help-requested? nodes)
       (say (list 'ok (list 'usage serve-usage)))
       (exit 0))
-    ;; NEVER: NO HOME, NO DAEMON. With no machine home or no run root serve
-    ;; says the datum and stops, status 2 as its other start refusals: before
-    ;; it detaches, and before a run directory, a lock or a socket is made.
-    (let ((missing (missing-home)))
-      (when missing
-        (say missing)
-        (exit 2)))
     (let ((unknown (serve-unknown-option nodes)))
       (when unknown
         (say (list 'error 'bad-request '(reason unknown-option)
@@ -164,6 +157,15 @@
         (say (list 'error 'bad-request '(reason too-large)
                    (list 'option "--idle-grace-ms") (list 'value grace) '(max 5000)))
         (exit 1)))
+    ;; NEVER: NO HOME, NO DAEMON. With no machine home or no run root serve
+    ;; says the datum and stops, status 2 as its other start refusals: after
+    ;; the refusals decided from the arguments alone (above, as README says),
+    ;; and before it detaches and before a run directory, a lock or a socket
+    ;; is made (below).
+    (let ((missing (missing-home)))
+      (when missing
+        (say missing)
+        (exit 2)))
     ;; THIS PROGRAM'S OWN FAILURES ANSWER BY THE TABLE: the
     ;; socket's derivation, the refusal checks and the detach run inside one
     ;; scope, and a filesystem condition that reaches here is the table's

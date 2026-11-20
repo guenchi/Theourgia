@@ -430,8 +430,14 @@
                     "THEOURGIA_HOME=" home " scheme --script " cli " publish "
                     M " 1 " cand " --store " d " > " pub-out " 2>/dev/null"
                     "; echo done > " pub-done " ) &"))
-          (system "sleep 1")
-          (let ((blocked (not (file-exists? pub-done))))
+          ;; BLOCKED IS "NOT DONE WITHIN THE FIXTURE'S BOUND" (400 polls of
+          ;; 50 ms, as the waits above and below), not "not done after one
+          ;; second": a publish the lock does not hold finishes well inside it
+          ;; even on a loaded machine, and one the lock holds never does.
+          (let ((blocked (let loop ((n 0))
+                           (cond ((file-exists? pub-done) #f)
+                                 ((> n 400) #t)
+                                 (else (system "sleep 0.05") (loop (+ n 1)))))))
             (system (string-append "printf x > " fifo))
             (let ((finished (let loop ((n 0))
                               (cond ((> n 400) #f)

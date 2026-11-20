@@ -33,7 +33,7 @@
           section-level section-title section-heading-src section-src
           make-section section?
           md->blocks blocks->md md-ref-nodes
-          heading-level heading-line)
+          heading-level heading-line section-kinds)
   (import (rnrs base) (rnrs control) (rnrs lists) (rnrs bytevectors)
           (rnrs unicode) (rnrs records syntactic) (rnrs io ports))
 
@@ -178,6 +178,12 @@
   ;; ---- split ---------------------------------------------------------------
 
 ;; ---- a section's heading line, from its three fields ------------------------
+  ;;
+  ;; THE KINDS A DOCUMENT WRITES AS ITS SECTIONS, each with a heading line from
+  ;; heading-line: export-md renders them so (project.sc md-kinds is these and
+  ;; `doc`), and read --md gives each the same line. One list, here, where
+  ;; both reach it without the projection being loaded.
+  (define section-kinds '(section decision task))
   ;;
   ;; THE ONE RULE, for export-md and read --md alike. Pure: it is handed the
   ;; three fields' values and knows nothing of the store.

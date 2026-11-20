@@ -19,6 +19,10 @@
 ;;         a path set, changed, contested by two writers, made absent; a block
 ;;         deleted and written after; a datum library beside a text file of
 ;;         one path; a snapshot's rows restored; a clone changed
+;;   PH-14 a literal path equal to a contested block's rendering, and a literal
+;;         #f path beside an absent one: only the literal's block holds
+;;   PH-15 the same two under the switch (path-holders, structure-per-record):
+;;         the witness does not fire
 ;;   PH-2  asked with #f for kind, mode or path, the question refuses
 ;;   PH-3  duplicated paths are the table's keys of the two judged kinds with
 ;;         two or more holders, sorted by path and then kind
@@ -67,16 +71,20 @@
     (ap! r w (list 'put (list (cons 'kind kind) (cons 'mode mode) (cons 'path path)
                               '(parent . root) (cons 'ord (hashtable-ref seqs w 0)))))))
 
-;; ---- the walk: every block read, a holder alive with the three fields equal
+;; ---- the walk: every block read, a holder alive with the three fields equal,
+;; each present and a single value (a contested field's rendering is not a
+;; value, an absent field is not #f: PH-14)
 (define (walk-holders r kind mode rel)
   (list-sort string<?
     (filter (lambda (id)
               (let ((b (state-read r id)))
                 (and b (not (cdr (assq 'deleted b)))
                      (let ((fs (cdr (assq 'fields b))))
-                       (define (field k) (let ((p (assq k fs))) (and p (cdr p))))
-                       (and (equal? (field 'kind) kind) (equal? (field 'mode) mode)
-                            (equal? (field 'path) rel))))))
+                       (define (plain k)
+                         (let ((p (assq k fs)))
+                           (and p (not (state-field-contested? r id k (cdr p))) (list (cdr p)))))
+                       (and (equal? (plain 'kind) (list kind)) (equal? (plain 'mode) (list mode))
+                            (equal? (plain 'path) (list rel)))))))
             (state-block-ids-all r))))
 ;; every block id, deleted ones too: the ids state->rows names
 (define (state-block-ids-all r)
@@ -176,7 +184,68 @@
       (list (state-path-claimants r 'file 'text '(conflict ("x"))) (table-agrees? r))
       (list (list c1) #t))
 
-(printf "== PH-2: #f is refused ==\n")
+;; ---- PH-14, PH-15: the two collisions (codex round (f)) -----------------------
+;; (a) a block whose path two writers contested renders as a (conflict ...)
+;; datum, and another block's literal path is that very datum: the second
+;; holds it, the first does not; (b) a literal #f path beside an absent one:
+;; the literal holds the key, the absent does not.
+(define (collisions!)
+  (let* ((r (reduce-empty))
+         (c (file! r "ca" "x.py")))
+    (ap! r "ca" (list 'set c 'path "y.py"))
+    (ap! r "cb" (list 'set c 'path "z.py"))
+    (let* ((v (cdr (assq 'path (cdr (assq 'fields (state-read r c))))))
+           (l (file! r "ck" v))
+           (a (ap! r "ck" (list 'put (list '(kind . file) '(mode . text) '(parent . root) (cons 'ord 99)))))
+           (f (ap! r "ck" (list 'put (list '(kind . file) '(mode . text) '(path . #f) '(parent . root) (cons 'ord 100))))))
+      (list r c v l a f))))
+(define col (collisions!))
+(define col-r (car col))
+(want "PH-14 (a) a literal path equal to a contested block's rendering: only the literal's block holds it; (b) a literal #f path beside an absent one: only the literal's block holds the key; the table as the walk"
+      (let ((v (caddr col)))
+        (list (and (pair? v) (eq? (car v) 'conflict))
+              (state-path-claimants col-r 'file 'text v)
+              (walk-holders col-r 'file 'text v)
+              (walk-holders col-r 'file 'text #f)
+              (table-agrees? col-r)))
+      (list #t (list (cadddr col)) (list (cadddr col)) (list (list-ref col 5)) #t))
+;; THE WITNESS ITSELF, under the switch in a child (degeneracy-check is
+;; decided when the library is expanded): the same two collisions, every
+;; record followed by the whole-table comparison (structure-per-record) and
+;; the question asked (path-holders); a false firing raises.
+(define ph15-program
+  (string-append
+    "(import (chezscheme) (theourgia reduce))\n"
+    "(define seqs (make-hashtable string-hash string=?))\n"
+    "(define (ap! r w payload) (let ((seq (+ 1 (hashtable-ref seqs w 0)))) (hashtable-set! seqs w seq) (reduce-apply! r w seq '() payload) (block-id w seq)))\n"
+    "(define (put! r w fields) (ap! r w (list 'put (append fields (list '(parent . root) (cons 'ord (hashtable-ref seqs w 0)))))))\n"
+    "(define r (reduce-empty))\n"
+    "(define c (put! r \"ca\" '((kind . file) (mode . text) (path . \"x.py\"))))\n"
+    "(ap! r \"ca\" (list 'set c 'path \"y.py\"))\n"
+    "(ap! r \"cb\" (list 'set c 'path \"z.py\"))\n"
+    "(define v (cdr (assq 'path (cdr (assq 'fields (state-read r c))))))\n"
+    "(define l (put! r \"ck\" (list '(kind . file) '(mode . text) (cons 'path v))))\n"
+    "(put! r \"ck\" '((kind . file) (mode . text)))\n"
+    "(put! r \"ck\" '((kind . file) (mode . text) (path . #f)))\n"
+    "(write (list (state-path-claimants r 'file 'text v) l))\n"))
+(define ph15-dir
+  (let ((v (getenv "THEOURGIA_TEST_ROOT")))
+    (string-append (if (and (string? v) (> (string-length v) 0)) v "/tmp/theourgia-test")
+                   "/path-holders-" (number->string (get-process-id)))))
+(system (string-append "mkdir -p '" ph15-dir "'"))
+(call-with-output-file (string-append ph15-dir "/child.ss") (lambda (p) (display ph15-program p)) 'replace)
+(define ph15-rc
+  (system (string-append "THEOURGIA_DEGENERACY=only:path-holders,structure-per-record scheme --script '"
+                         ph15-dir "/child.ss' > '" ph15-dir "/out' 2> '" ph15-dir "/err'")))
+(define ph15-out (guard (e (#t #f)) (call-with-input-file (string-append ph15-dir "/out") read)))
+(define ph15-err (call-with-input-file (string-append ph15-dir "/err") get-string-all))
+(printf "PH-15 the child: rc ~s, answer ~s, error port ~s\n" ph15-rc ph15-out ph15-err)
+(want "PH-15 under the switch (path-holders, structure-per-record) the two collisions raise no witness, and the literal's block alone holds the contest-shaped path"
+      (list ph15-rc (and (pair? ph15-out) (equal? (car ph15-out) (list (cadr ph15-out)))))
+      (list 0 #t))
+(system (string-append "rm -rf '" ph15-dir "'"))
+
+(printf "== PH-2: #f is refused ==\n")(printf "== PH-2: #f is refused ==\n")
 (want "PH-2 a #f kind, mode or path refuses by name"
       (map (lambda (args) (caught (apply state-path-claimants r args)))
            '((#f text "x.py") (file #f "x.py") (file text #f)))

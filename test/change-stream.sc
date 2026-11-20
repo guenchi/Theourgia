@@ -505,7 +505,9 @@
 ;; (mark-of answers #f and keeps the refusal for the row's check), so the
 ;; answer is (no-mark) at once, before any frame is read; covers? is never
 ;; asked about a mark that is not there.
-(define (frame-settled d sub after mark)
+;; QUIET, given and true: the no-baseline answer prints nothing (FRAME-0
+;; hands #f on purpose; the line is for a wait that really timed out).
+(define (frame-settled d sub after mark . quiet)
   (cond
     ((not mark) (list 'no-mark))
     ;; NO BASELINE IS A NAMED ANSWER, NOT A RAISE: AFTER is the revision a
@@ -514,7 +516,8 @@
     ;; raised and took the rest of the fixture down. The rows comparing
     ;; this answer then read red by name.
     ((not (and (integer? after) (exact? after)))
-     (printf "NO BASELINE: frame-settled was handed ~s, not a revision; the acceptance's current never came~%" after)
+     (unless (and (pair? quiet) (car quiet))
+       (printf "NO BASELINE: frame-settled was handed ~s, not a revision; the acceptance's current never came~%" after))
      (list 'no-baseline after))
     (else
       (let* ((factor (load-factor)) (bound (scaled 10000 factor)) (t0 (real-time)))
@@ -1255,9 +1258,12 @@
                             (frames-of (sub-lines sub)))))
       (printf "the slow reload: a reload took ~s ms; frames between the two actions' frames: ~s, of them empty: ~s~%"
               reload-ms (length between) (length (filter (lambda (f) (equal? (clause 'items f) '())) between)))
-      (want "FRAME-0 frame-settled handed no baseline (a timed-out acceptance's #f) answers a named (no-baseline #f), not a raise"
-            (frame-settled d sub #f (cons "mirrorsa" 1))
-            '(no-baseline #f))
+      (want "FRAME-0 frame-settled handed no baseline (a timed-out acceptance's #f) answers a named (no-baseline #f), not a raise, and, asked quietly, prints no NO BASELINE line"
+            (let* ((answer #f)
+                   (printed (with-output-to-string
+                              (lambda () (set! answer (frame-settled d sub #f (cons "mirrorsa" 1) #t))))))
+              (list answer printed))
+            '((no-baseline #f) ""))
       (want "FRAME-39 SLOW: the stale empty frame was seen before action 2, and between the two actions' frames there is at least one frame, every one empty"
             (list empty-seen (pair? between) (for-all (lambda (f) (equal? (clause 'items f) '())) between))
             '(#t #t #t))

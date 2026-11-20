@@ -2111,6 +2111,12 @@
                                   (b (state-read state (car rest))))
                              (cond
                                ((not b) (unknown-id state (car rest)))
+                               ;; A DATUM ROOT IS NOT MARKDOWN, recursive or not, and is
+                               ;; refused as the one-block read refuses it (md-heading
+                               ;; MH-9). A datum block met inside a subtree is the
+                               ;; renderer's (block-text), as before.
+                               ((and deep? (equal? (assq 'mode (cdr (assq 'fields b))) '(mode . datum)))
+                                (list 'error 'not-markdown (list 'id (car rest)) '(mode datum)))
                                (deep? (append (text ((project-entry 'block-text) state (car rest) #f))
                                               (receipt state ((project-entry 'subtree-ids) state (car rest)))))
                                (else
@@ -2156,14 +2162,14 @@
                                                       ((and (bytevector? (cdr e)) (src-text (cdr e))))
                                                       (else "")))))
                                        (front (str 'front))
-                                       (head (if (equal? (assq 'kind fs) '(kind . section))
+                                       (head (if (let ((k (assq 'kind fs))) (and k (memq (cdr k) section-kinds)))
                                                  (heading-line (str 'heading-src)
                                                                (let ((e (assq 'level fs))) (and e (cdr e)))
                                                                (str 'title))
                                                  (str 'heading-src)))
                                        (body (str 'src)))
                                   (if (equal? (assq 'mode fs) '(mode . datum))
-                                      (list 'error 'not-markdown (list 'id (car rest)) '(kind datum))
+                                      (list 'error 'not-markdown (list 'id (car rest)) '(mode datum))
                                       (append (text (string-append front head body))
                                               (receipt state (list (car rest))))))))))))
                       (deep?

@@ -3461,15 +3461,22 @@
             (assertion-violation 'degeneracy "the siblings differ from the outline's" parent after answer expected))))
       ;; WHO HOLDS A PATH, BY THE WALK THE TABLE REPLACED: every block read,
       ;; a holder alive with kind, mode and path equal to the ones asked.
+      ;; A HOLDER BY THE KEY COLLECTION'S RULE: each of kind, mode and path
+      ;; present and a single value (state-field-contested? asks the
+      ;; candidates), compared as (list value). A contested field whose
+      ;; rendering equals another block's literal value is not that value,
+      ;; and an absent path is not a literal #f (codex round (f); PH-14, PH-15).
       (define (path-holders-walk r kind mode rel)
         (list-sort string<?
           (filter (lambda (id)
                     (let ((b (state-read r id)))
                       (and b (not (cdr (assq 'deleted b)))
                            (let ((fs (cdr (assq 'fields b))))
-                             (define (field k) (let ((p (assq k fs))) (and p (cdr p))))
-                             (and (equal? (field 'kind) kind) (equal? (field 'mode) mode)
-                                  (equal? (field 'path) rel))))))
+                             (define (plain k)
+                               (let ((p (assq k fs)))
+                                 (and p (not (state-field-contested? r id k (cdr p))) (list (cdr p)))))
+                             (and (equal? (plain 'kind) (list kind)) (equal? (plain 'mode) (list mode))
+                                  (equal? (plain 'path) (list rel)))))))
                   (map car (reduction-blocks r)))))
       (define (path-holders-compare r kind mode rel answer)
         (let ((expected (path-holders-walk r kind mode rel)))

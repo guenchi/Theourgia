@@ -33,7 +33,7 @@
           store-init! nearest-ids store-snapshot!
           batch-answer
           datum-mode-block? draft-on-datum-refusal
-          store-check store-position store-adopt! store-search search-state field-strings store-search-report search-state-report search-hit-limit store-grep store-refs store-log store-tags parse-cut store-diff store-state-at-cut store-conflicts store-evidence
+          store-check store-position store-adopt! store-search search-state field-strings store-search-report search-state-report search-hit-limit store-grep grep-state-report store-refs store-log store-tags parse-cut store-diff store-state-at-cut store-conflicts store-evidence
           library-locator located-library-name file-header
           derived-tables? search-keyword-hook
           make-write-request write-request? request-actors store-successors store-intervals
@@ -1809,10 +1809,11 @@
   ;; block. Two facts, two places; the counter's own comment already says it
   ;; counts attempts.
   ;;
-  ;; It is derived FROM that counter, per block: the count is read before a
-  ;; block's fields and after them, and the block is unreadable if it moved.
-  ;; That is once per block by construction, whatever route the fields took,
-  ;; and it costs no second decode.
+  ;; It is read from the block's own decode, not from the counter: the read
+  ;; of each stored text field answers whether its bytes decoded
+  ;; (field-texts), and the block is unreadable when one did not. Once per
+  ;; block by construction, no second decode, and another scan running in
+  ;; the process meanwhile does not move it (cli3 N10, N10b).
   ;; `derived` is (<tables read> (<via> ...) <stale>) when the caller gave
   ;; the search an editor's keywords to consult, else #f: the scanned
   ;; fields name derived-keywords only when a table was read.
@@ -2296,16 +2297,23 @@
                         (derived (quote doc))
                         (derived (quote body))))
             (cdr src-read))))
-  ;; -> a datum body as the datum projection prints it, or #f when the body
-  ;; is absent, text or bytes. A printer this Chez is not measured for
+  ;; -> a datum body as the datum projection prints it, or #f when the block
+  ;; is not a datum block or has no body. The body is printed WHATEVER ITS
+  ;; VALUE, a string or a bytevector included, as datum-project prints it
+  ;; (datum-print): a datum block's string body is the literal "...", not text
+  ;; (codex round (g); grep-datum GD-5). A printer this Chez is not measured for
   ;; refuses with (error unsupported-printer-version) (ffi.sc
   ;; source-datum-print); the body is then its one-line spelling, as before.
   ;; ONLY THAT REFUSAL: anything else the printer raises is not caught here.
+  ;; THE STORED MODE IS ASKED FIRST: only a datum block's view is read, so a
+  ;; scan does not build the view of every block it greps.
   (define (printed-datum-body state live id)
-    (let ((e (assq (quote body) (viewed-fields state live id))))
-      (and e (not (string? (cdr e))) (not (bytevector? (cdr e)))
+    (let ((e (and (let* ((b (state-read state id)) (fs (and b (assq (quote fields) b))))
+                    (and fs (equal? (assq (quote mode) (cdr fs)) (quote (mode . datum)))))
+                  (assq (quote body) (viewed-fields state live id)))))
+      (and e
            (guard (x ((equal? x (quote (error unsupported-printer-version))) (datum-spelling (cdr e))))
-             (source-datum-print (cdr e))))))
+             (source-datum-print (cdr e) #t)))))
 
   ;; -> AN ALIST, NOT A TUPLE. The caller reads `items`, `omitted-lines`,
   ;; `unseen-blocks`, `scanned-blocks`, `fields` and `cut` by name. A tuple
@@ -2322,8 +2330,12 @@
   ;; block it names among those with a matching line is skipped before the
   ;; caps; it is still scanned.
   (define (store-grep store pattern under all? . hooks)
-    (let* ((state (open-and-reduce store))
-           (rows (state-outline state))
+    (apply grep-state-report (open-and-reduce store) pattern under all? hooks))
+  ;; THE SAME REPORT OVER A STATE THE CALLER ALREADY HOLDS, as
+  ;; search-state-report is search's: a test interleaves two greps' scans
+  ;; over states loaded first (cli3 N10b).
+  (define (grep-state-report state pattern under all? . hooks)
+    (let* ((rows (state-outline state))
            (live (let ((t (make-hashtable string-hash string=?)))
                    (for-each (lambda (r) (hashtable-set! t (caddr r) #t)) rows)
                    t))
@@ -4076,6 +4088,12 @@
           ;; drafts -- and it travels no further than the plan record it
           ;; is written into.
           (consumes (and (> (length rest) 4) (list-ref rest 4)))
+          ;; ON-PLAN, when given: called with a persisted plan's event
+          ;; (<writer> . <seq>) when this request COMPLETES that plan, so the
+          ;; caller knows the plan is one of its own records though an
+          ;; earlier attempt wrote it (working.sc's behind; commit-behind
+          ;; CB-4). Handed back lexically, not through a parameter.
+          (on-plan (and (> (length rest) 5) (list-ref rest 5)))
           (state (reduce-empty))
           (t-start (timing-call request-begin!)))
       (let* ((s (timed 'load-replay (provided-begin store (deliver-into state #f))))
@@ -4233,6 +4251,7 @@
                             ;; somebody else's edit. The frozen
                             ;; declaration is the only input.
                             ((and verdict (eq? (car verdict) 'complete) (>= (length verdict) 4))
+                             (when on-plan (on-plan (caddr verdict)))
                              (complete-plan! s state req verdict))
                             ;; A REQUEST OF ONE SUB-OPERATION HAS NO PLAN,
                             ;; and says so: `single`, no plan event.

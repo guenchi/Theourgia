@@ -44,7 +44,7 @@
         (only (theourgia store) open-and-reduce make-write-request request-verdict request-verdict/provided
               store-evidence store-snapshot!)
         (only (theourgia reduce) reduce-applied-cut reduce-gates)
-        (only (theourgia request) ev-placement ev-event)
+        (only (theourgia request) ev-placement ev-event ev-delivered?)
         (only (theourgia degeneracy) degeneracy-known-checks)
         (only (theourgia evidence-index) indexed-records index-checkpoint! index-forget-memory!)
         (only (theourgia wire) decode-line encode-record storable-encode storable-decode
@@ -482,8 +482,8 @@
 (define m (fresh-store "m"))
 (define m-r (tracked! (car m) (cdr m) "QK" "tracked"))
 (want "IF-7 CONTROL: store-evidence on a store with no fork answers the record valid-history and delivered"
-      (map (lambda (e) (list (ev-placement e) (ev-event e))) (store-evidence (car m) (cons (cdr m) "QK")))
-      (list (list 'valid-history (cons (cdr m) (+ 1 (cadr m-r))))))
+      (map (lambda (e) (list (ev-placement e) (ev-event e) (ev-delivered? e))) (store-evidence (car m) (cons (cdr m) "QK")))
+      (list (list 'valid-history (cons (cdr m) (+ 1 (cadr m-r))) #t)))
 ;; THE EARLIER CUT: taken, then a fork written below the record by "another
 ;; process", then the plain verdict asked with that cut under only:index-fork
 ;; in a child. The plain verdict runs no check, so nothing is printed.

@@ -484,14 +484,19 @@
   (define printer-measured-versions
     '("Chez Scheme Version 10.1.0" "Chez Scheme Version 10.3.0" "Chez Scheme Version 10.4.0"
       "Chez Scheme Version 10.4.1"))
-  (define (source-datum-print datum)
+  ;; UNICODE?, when given and true, prints characters past ASCII as
+  ;; themselves (grep reads a datum body so, to find a word as it is
+  ;; written); every other setting is the export's, so an ASCII body prints
+  ;; the export's lines, and a body with such characters may break a line
+  ;; elsewhere than the export does.
+  (define (source-datum-print datum . unicode?)
     (unless (member (scheme-version) printer-measured-versions)
       (raise '(error unsupported-printer-version)))
     (parameterize ((pretty-line-length 72) (pretty-one-line-limit 72)
                    (pretty-initial-indent 0) (pretty-standard-indent 2)
                    (pretty-maximum-lines #f) (print-length #f) (print-level #f)
                    (print-radix 10) (print-graph #f) (print-gensym #f)
-                   (print-unicode #f))
+                   (print-unicode (and (pair? unicode?) (car unicode?) #t)))
       (call-with-string-output-port (lambda (port) (pretty-print datum port)))))
 
   ;; Replace the launcher process without a shell or argument interpolation.

@@ -58,7 +58,9 @@
         (only (theourgia store) open-and-reduce obtain-state make-write-request request-verdict request-verdict/provided)
         (only (theourgia reduce) reduce-applied-cut reduce-gates)
         (only (theourgia degeneracy) degeneracy-active)
-        (only (theourgia evidence-index) index-forget-memory!)
+        (only (theourgia evidence-index) index-forget-memory! index-checkpoint!)
+        (only (theourgia wire) storable-encode storable-decode sexpr->string-extended string->sexpr-extended)
+        (only (theourgia digest) sha256 bytevector->hex)
         (only (theourgia incomplete) incomplete-accepted))
 
 (define bad 0)
@@ -118,22 +120,53 @@
 (define (end-seq st w) (discovery-end-seq (discover-prefix st w 'shared)))
 (define (cursor st w) (format "~a:~a" w (end-seq st w)))
 
+;; A COLD INDEX: its memory forgotten and its checkpoint removed, so the next
+;; verdict builds its own by a scan
+(define (cold-index! st)
+  (index-forget-memory!)
+  (let ((cp (string-append st "/request-index.sexp"))) (when (file-exists? cp) (delete-file cp))))
 ;; -> (<verdict without a provider> <verdict with the session's>), both asked
-;; inside one write session of ST for request REQ-ID at the writer's end
-(define (both-verdicts st w req-id)
+;; inside one write session of ST for request REQ-ID at the writer's end, EACH
+;; ON AN INDEX OF ITS OWN: the index is cached per store and checkpointed on
+;; disk, so without this the second arm reads the first arm's index and the
+;; two are not compared at all (codex round (c)). BEFORE-PROVIDED, when given,
+;; prepares the provided arm's index instead of a cold one (the control).
+(define (both-verdicts st w req-id . before-provided)
   (let* ((state (open-and-reduce st))
          (cut (reduce-applied-cut state))
          (gates (reduce-gates state))
          (req (make-write-request "test" 'insert (list "root" "x") req-id (cons w (end-seq st w))))
          (s (log-begin st (lambda args 'applied)))
          (provider (session-discovery-provider s))
-         ;; the provided verdict first: it meets the index cold, and the
-         ;; index's scan reads each writer's fork itself (F474)
-         (provided (request-verdict/provided provider st req cut #f gates))
-         (plain (request-verdict st req cut #f gates)))
+         (provided (begin (if (pair? before-provided) ((car before-provided)) (cold-index! st))
+                          (request-verdict/provided provider st req cut #f gates)))
+         (plain (begin (cold-index! st) (request-verdict st req cut #f gates))))
     (log-end! s)
+    (cold-index! st)
     (list plain provided)))
 (define (same? pair) (equal? (car pair) (cadr pair)))
+;; THE CONTROL'S INDEX: a checkpoint of ST's own index, valid (its stamp and
+;; digest as the product writes them), with every valid-history frame placed
+;; quarantined; a verdict that reads it meets the same frames classified
+;; otherwise than a scan classifies them.
+(define (encode-checkpoint x) (string->utf8 (sexpr->string-extended (storable-encode x))))
+(define (requarantined-index! st)
+  (cold-index! st)
+  (index-checkpoint! st)
+  (index-forget-memory!)
+  (let* ((cp (string-append st "/request-index.sexp"))
+         (x (storable-decode (string->sexpr-extended (utf8->string (call-with-port (open-file-input-port cp) get-bytevector-all)))))
+         (body (list-ref x 4))
+         (moved (map (lambda (e) (if (eq? (list-ref e 4) 'valid-history)
+                                     (list (car e) (cadr e) (caddr e) (cadddr e) 'quarantined)
+                                     e))
+                     (cadr body)))
+         (body2 (list (car body) moved)))
+    (call-with-port (open-file-output-port cp (file-options no-fail))
+      (lambda (p) (put-bytevector p (encode-checkpoint
+                                      (list 'request-index 1 (caddr x)
+                                            (bytevector->hex (sha256 (encode-checkpoint body2))) body2)))))
+    (length (filter (lambda (e) (eq? (list-ref e 4) 'quarantined)) moved))))
 
 (printf "== VD-1: the verdict with the session's discoveries answers as without ==\n")
 (define a (fresh-store "a"))
@@ -146,6 +179,14 @@
       (let ((v (both-verdicts (car a) (cdr a) "RAN")))
         (list (same? v) (eq? 'execute (car (car v)))))
       '(#t #f))
+;; THE CONTROL: only the provided arm's index changes (its frames placed
+;; quarantined in a valid checkpoint), and the comparison must read it.
+(define vd1c-moved (box 0))
+(define vd1c (both-verdicts (car a) (cdr a) "RAN" (lambda () (set-box! vd1c-moved (requarantined-index! (car a))))))
+(printf "VD-1c the control: ~s frames placed quarantined; plain ~s, provided ~s\n" (unbox vd1c-moved) (car vd1c) (cadr vd1c))
+(want "VD-1c CONTROL: with only the provided arm's index changed, the two verdicts differ (the comparison sees the index)"
+      (list (> (unbox vd1c-moved) 0) (same? vd1c) (eq? 'execute (car (car vd1c))))
+      '(#t #f #f))
 ;; a torn tail: bytes past the last newline of the current segment
 (define (current-segment-path st w)
   (let* ((p (discover-prefix st w 'shared)) (seg (car (discovery-physical-current p))))
@@ -284,12 +325,27 @@
 ;; outlives the wait below can be stopped by pid, not left behind
 (define (start-child! tag setting program args)
   (let ((ps (child-paths tag)))
+    (set! started-children (cons ps started-children))
     (call-with-output-file (car ps) (lambda (p) (for-each (lambda (f) (write f p) (newline p)) program)) 'replace)
     (system (string-append "sh -c \"" setting " scheme --script '" (car ps) "' "
                            (apply string-append (map (lambda (a) (string-append "'" a "' ")) args))
                            "> '" (cadr ps) "' 2> '" (caddr ps) "' < /dev/null & echo \\$! > '" (list-ref ps 4)
                            "'; wait \\$!; touch '" (cadddr ps) "'\" &"))
     ps))
+;; EVERY CHILD STILL RUNNING IS KILLED BY ITS PID before the scratch tree goes,
+;; and when the fixture raises: a child must not outlive the fixture holding
+;; the store's lock (codex round (c)). Only a child whose done-file is absent:
+;; a finished child's pid may since be another process's.
+(define started-children '())
+(define (kill-children!)
+  (for-each (lambda (ps)
+              (let ((pid (and (not (file-exists? (cadddr ps))) (file-exists? (list-ref ps 4))
+                              (read-or-false (file-text (list-ref ps 4))))))
+                (when (and (integer? pid) (> pid 0))
+                  (system (string-append "kill -KILL " (number->string pid) " 2>/dev/null")))))
+            started-children))
+(let ((handler (base-exception-handler)))
+  (base-exception-handler (lambda (c) (kill-children!) (handler c))))
 ;; LIMIT is a count of 20 ms ticks, about 30 s by default
 (define (await-file path . limit)
   (let ((ticks (if (pair? limit) (car limit) 1500)))
@@ -409,9 +465,6 @@
 ;; own by a scan; the load and the session declared DECLARATION (#f or
 ;; incomplete-accepted); ARGS the request's arguments as the dispatcher makes
 ;; them (the options but --req, --cursor and --premises)
-(define (cold-index! st)
-  (index-forget-memory!)
-  (let ((cp (string-append st "/request-index.sexp"))) (when (file-exists? cp) (delete-file cp))))
 (define (cold-verdicts st req-id after declaration . args)
   (let* ((state (obtain-state st #f declaration))
          (cut (reduce-applied-cut state))
@@ -531,6 +584,7 @@
       (list (car vd6) (integer? vd6-pid) (vd6-gone?))
       '(outlived-its-wait #t #t))
 
+(kill-children!)
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\nverdict-discoveries complete\n" bad rows-run)
 (exit (if (= bad 0) 0 1))

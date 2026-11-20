@@ -2746,7 +2746,7 @@
 ;; source is not text; every interleaving must give A 0 and B 20. The scans
 ;; run over states loaded beforehand (search-state-report): a load refuses a
 ;; continuation that escapes it, which an engine's expiry is. Before the fix
-;; A read 1 to 6 at eleven of the twelve fuels.
+;; A read 1 to 7 at ten of the twelve fuels (sb-1115's reading B7).
 (define (interleave2 ta tb fuel)
   (let loop ((ea (make-engine ta)) (eb (make-engine tb)) (va #f) (vb #f) (a-turn #t))
     (cond
@@ -2779,6 +2779,19 @@
 (want "N10 two searches interleaved in one process each count their own blocks: A 0 and B 20 at every fuel"
       (list ((unreadable-of st11a)) ((unreadable-of st11b))
             (filter (lambda (r) (not (equal? (cdr r) '(0 20)))) interleavings))
+      '(0 20 ()))
+
+;; AND GREP'S HALF (N10b): the same two stores, the two greps' scans
+;; interleaved; grep reads src alone, and each block's unreadable is its
+;; own read's.
+(define (grep-unreadable-of st) (lambda () (cdr (assq 'unreadable-blocks (grep-state-report st "block" #f #f)))))
+(define grep-interleavings
+  (map (lambda (fuel) (cons fuel (interleave2 (grep-unreadable-of st11a) (grep-unreadable-of st11b) fuel)))
+       '(10 25 50 100 200 400 800 1600 3200 6400 12800 25600)))
+(printf "N10b grep interleaved: (fuel A B) ~s\n" grep-interleavings)
+(want "N10b two greps interleaved in one process each count their own blocks: A 0 and B 20 at every fuel"
+      (list ((grep-unreadable-of st11a)) ((grep-unreadable-of st11b))
+            (filter (lambda (r) (not (equal? (cdr r) '(0 20)))) grep-interleavings))
       '(0 20 ()))
 
 ;; A REHEARSAL'S COPY COUNTS ITS UNREADABLE BLOCKS TOO. The process counter

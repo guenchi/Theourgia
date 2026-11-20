@@ -21,10 +21,14 @@
 ;;   MH-3  three sections, read --md and export-md agree: no level ("# One"),
 ;;         level 2 ("## Two"), a stored heading-src that parses to the same
 ;;         pair ("# Three #", kept byte for byte)
+;;   MH-7  a decision under the document, its line stored and then retitled: read
+;;         --md and export-md both show the new title's line
+;;   MH-8  a task the same way
 ;;   MH-6  the rule itself (md.sc heading-line): a level that is not 1 to 6 --
 ;;         the text "2", which the write path refuses and only a record from
 ;;         elsewhere can hold -- reads as 1
-;;   MH-4  read --md of a datum block: (error not-markdown (id <id>) (kind datum))
+;;   MH-4  read --md of a datum block: (error not-markdown (id <id>) (mode datum))
+;;   MH-9  read --recursive --md of a datum root: the same refusal
 ;;   MH-5  a section retitled after its line was stored: read --md and export-md
 ;;         both show the new title's line, not the stored one
 (import (chezscheme) (only (theourgia md) heading-line))
@@ -103,6 +107,14 @@
 (define five (new-id (run d "" "insert" "--under" docid "--title" "Old")))
 (run d (format "((set ~s heading-src \"# Old\\n\"))" five) "batch")
 (run d "" "set" five "title" "New")
+(define (insert-kind kind title)
+  (batch-id (run d (format "((insert ~s #f ((kind . ~a) (title . ~s) (heading-src . ~s))))" docid kind title
+                           (string-append "# " title "\n"))
+                 "batch")))
+(define decision (insert-kind "decision" "Old decision"))
+(define task (insert-kind "task" "Old task"))
+(run d "" "set" decision "title" "New decision")
+(run d "" "set" task "title" "New task")
 (define out (string-append root "/md"))
 (system (string-append "mkdir -p '" out "'"))
 (printf "export-md: ~s\n" (run d "" "export-md" out))
@@ -122,15 +134,26 @@
            (list one two three) '("# One\n" "## Two\n" "# Three #\n"))
       '((#t #t) (#t #t) (#t #t)))
 (define dt (batch-id (run d "((insert root #f ((kind . code) (mode . datum) (body define x 1))))" "batch")))
-(want "MH-4 read --md of a datum block answers not-markdown, naming it and its kind"
+(want "MH-4 read --md of a datum block answers not-markdown, naming it and its mode"
       (run d "" "read" dt "--md")
-      (list 'error 'not-markdown (list 'id dt) '(kind datum)))
+      (list 'error 'not-markdown (list 'id dt) '(mode datum)))
+(want "MH-9 read --recursive --md whose root is a datum block answers the same refusal"
+      (run d "" "read" dt "--recursive" "--md")
+      (list 'error 'not-markdown (list 'id dt) '(mode datum)))
 
 (want "MH-5 a section retitled after its heading line was stored: read --md and export-md both show # New, and neither the stored # Old"
       (let ((t (md-text (run d "" "read" five "--md"))))
         (list (and t (starts? t "# New\n")) (contains? exported "# New\n") (contains? exported "# Old\n")))
       '(#t #t #f))
 
+(want "MH-7 a decision retitled after its heading line was stored: read --md and export-md both show # New decision, and neither the stored # Old decision"
+      (let ((t (md-text (run d "" "read" decision "--md"))))
+        (list (and t (starts? t "# New decision\n")) (contains? exported "# New decision\n") (contains? exported "# Old decision\n")))
+      '(#t #t #f))
+(want "MH-8 a task retitled after its heading line was stored: read --md and export-md both show # New task, and neither the stored # Old task"
+      (let ((t (md-text (run d "" "read" task "--md"))))
+        (list (and t (starts? t "# New task\n")) (contains? exported "# New task\n") (contains? exported "# Old task\n")))
+      '(#t #t #f))
 (want "MH-6 the rule reads a level that is not 1 to 6 as 1: the text 2, 0, 7 and none give # Two"
       (map (lambda (level) (heading-line "" level "Two")) '("2" 0 7 #f))
       '("# Two\n" "# Two\n" "# Two\n" "# Two\n"))

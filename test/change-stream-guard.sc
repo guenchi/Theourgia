@@ -888,7 +888,9 @@
                              (and (eq? (car j) 'equal) (null? (cadr j)) (null? (caddr j))))))
                  ;; -> frame K's standing in the two traces: decoded (its payload a
                  ;; count in the base's), not-decoded (in neither), new-only, or
-                 ;; absent (no such frame)
+                 ;; absent (no such frame). NOTE: decoded is a LENGTH match: a
+                 ;; frame counts as decoded when any parse line of the base's trace
+                 ;; has its payload's length, not only this frame's own line.
                  (standing (lambda (k)
                              (let ((p (payload k)))
                                (cond ((not p) 'absent)
@@ -919,12 +921,19 @@
                              (memq 'decoded standings) #t)
                         (and (pair? frames)
                              (contains? (car frames)
-                                        (string-append "\"" (env-or "THEOURGIA_ACTOR" (env-or "USER" "cli")) "\"")))
+                                        ;; the name as the record writes a string,
+                                        ;; escapes included (codex round (i))
+                                        (format "~s" (env-or "THEOURGIA_ACTOR" (env-or "USER" "cli")))))
                         (and plan-at (list (session-ids plan-at) (session-ids (+ plan-at 1))))
                         (judged (shifted (cadr tb) user #f) (shifted (cadr tn) user #f))
                         (judged (shifted (cadr tb) pid #f) (shifted (cadr tn) pid #f))
+                        ;; THE NEGATIVE ARM MUST RUN: a target decoded in the new trace
+                        ;; is required on its own, so an absent one fails rather than
+                        ;; reading as the rejection it was meant to show
+                        (and first-decoded #t)
+                        (and first-decoded (not (equal? (cadr tn) (shifted (cadr tn) first-decoded #t))))
                         (and first-decoded (judged (cadr tb) (shifted (cadr tn) first-decoded #t))))
-                  '(#t #t (2 1) #t #t #f)))))
+                  '(#t #t (2 1) #t #t #t #t #f)))))
       ;; THE TIME OF COMMITS, BY ALTERNATING PAIRS. Forty rounds; each round
       ;; times ten commits on each daemon, the order flipped every round, so
       ;; a drift of the machine falls on both arms alike. Each arm is read by

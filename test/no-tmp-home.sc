@@ -261,16 +261,58 @@
 (printf "the gate: ~a\n" (if gate-open "NH-0 and NH-1 green, the rest runs" "NH-0 or NH-1 red, NOTHING BELOW RUNS"))
 (want "the gate: NH-0 and NH-1 are green, so no program below can run with a fallback in place" gate-open #t)
 
-;; Around each cell: /tmp/.theourgia's existence and modification time,
-;; before and after. -> (result tmp-home-unchanged) or (result (tmp-home ...)).
+;; Around each cell: /tmp/.theourgia and EVERY ENTRY BENEATH IT, each with
+;; its path, kind, size and modification time, before and after; a write to
+;; an existing file or a socket made in an existing subdirectory changes the
+;; entry, not the home's own mtime (codex round (e)). -> (result
+;; tmp-home-unchanged) or (result (tmp-home ...)).
 (define tmp-home "/tmp/.theourgia")
+(define (entry-state path)
+  (let ((t (file-modification-time path #f)))
+    (list path (cond ((file-directory? path #f) 'dir) ((file-symbolic-link? path) 'link) (else 'file))
+          (if (and (file-regular? path #f) (not (file-directory? path #f)))
+              (guard (e (#t #f)) (call-with-port (open-file-input-port path) (lambda (p) (port-length p))))
+              #f)
+          (time-second t) (time-nanosecond t))))
+(define (tree-state path)
+  (cons (entry-state path)
+        (if (and (file-directory? path #f) (not (file-symbolic-link? path)))
+            (apply append (map (lambda (n) (tree-state (string-append path "/" n)))
+                               (list-sort string<? (guard (e (#t '())) (directory-list path)))))
+            '())))
 (define (tmp-home-state)
-  (if (file-exists? tmp-home #f)
-      (let ((t (file-modification-time tmp-home #f))) (list 'present (time-second t) (time-nanosecond t)))
-      'absent))
+  (if (file-exists? tmp-home #f) (cons 'present (tree-state tmp-home)) 'absent))
+;; WHO OWNS AN ENTRY, so a red is classed in one look: the owning user, read
+;; by stat (a pid would cost an lsof per entry)
+(define (owner-of path)
+  (let ((out (string-append root "/owner.txt")))
+    (system (string-append "stat -f %Su " (quoted path) " > " (quoted out) " 2>/dev/null"))
+    (let ((t (guard (e (#t "")) (call-with-input-file out get-line))))
+      (if (or (eof-object? t) (string=? t "")) 'gone t))))
+;; THE ENTRIES THAT DIFFER: each (path kind owner), in either state alone
+(define (changed-entries before after)
+  (let ((b (if (pair? before) (cdr before) '())) (a (if (pair? after) (cdr after) '())))
+    (map (lambda (e) (list (car e) (cadr e) (owner-of (car e))))
+         (append (filter (lambda (e) (not (member e b))) a)
+                 (filter (lambda (e) (not (member e a))) b)))))
 (define (guarded thunk)
   (let* ((before (tmp-home-state)) (r (thunk)) (after (tmp-home-state)))
-    (list r (if (equal? before after) 'tmp-home-unchanged (list 'tmp-home before after)))))
+    (if (equal? before after)
+        (list r 'tmp-home-unchanged)
+        (let ((changed (changed-entries before after)))
+          (printf "TMP-HOME CHANGED around this cell (path kind owner): ~s\n" changed)
+          (list r (list 'tmp-home (if (pair? before) 'present 'absent) changed))))))
+;; THE STATE AT THE START: absent is the normal case since F476, and then any
+;; entry that appears is the product's; present means another program or an
+;; old run left one, and a red names whose entry moved.
+(let ((st (tmp-home-state)))
+  (if (pair? st)
+      (printf "/tmp/.theourgia at the start: present, ~a entries, owners ~s\n"
+              (length (cdr st)) (let loop ((es (cdr st)) (seen '()))
+                                  (if (null? es) seen
+                                      (let ((o (owner-of (car (car es)))))
+                                        (loop (cdr es) (if (member o seen) seen (cons o seen)))))))
+      (printf "/tmp/.theourgia at the start: absent; any entry that appears is the product's\n")))
 (define-syntax gated
   (syntax-rules ()
     ((_ label got expect)
@@ -363,6 +405,27 @@
               (r (child root "" "theourgiad.sc" (list "serve" S "--socket" sock))))
          (list r (serve-leftovers sock) (serve-pids S) (listing S)))
        (list (list 2 machine-line "") '(#f #f #f) '() (listing S)))
+;; THE ARGUMENTS FIRST (README): an unknown option is refused from the
+;; arguments alone, before the home check, so with no HOME it is still
+;; unknown-option, status 1, and nothing is made
+(gated "NH-2b serve <dir> --bogus with no HOME: unknown-option, status 1, not no-home; no socket, lock or daemon"
+       (let* ((sock (string-append sock-root "/bogus.sock"))
+              (r (child root "" "theourgiad.sc" (list "serve" S "--socket" sock "--bogus"))))
+         (list (car r)
+               (let ((out (cadr r)) (head "(error bad-request (reason unknown-option) (option \"--bogus\")"))
+                 (and (>= (string-length out) (string-length head))
+                      (string=? head (substring out 0 (string-length head)))))
+               (serve-leftovers sock) (serve-pids S)))
+       (list 1 #t '(#f #f #f) '()))
+(gated "NH-2b serve <dir> --session-size nope with no HOME: the count's refusal, status 1, not no-home"
+       (let* ((sock (string-append sock-root "/nope.sock"))
+              (r (child root "" "theourgiad.sc" (list "serve" S "--socket" sock "--session-size" "nope"))))
+         (list (car r)
+               (let ((out (cadr r)) (head "(error bad-request (reason not-a-count)"))
+                 (and (>= (string-length out) (string-length head))
+                      (string=? head (substring out 0 (string-length head)))))
+               (serve-leftovers sock) (serve-pids S)))
+       (list 1 #t '(#f #f #f) '()))
 ;; UNDER --detach the check is still before the detach: the datum on the
 ;; caller's stdout, and no log opened
 (gated "NH-2 serve --detach --log: the datum on stdout, status 2, before it detaches: no log, no socket, no lock"

@@ -89,14 +89,26 @@
           (lambda (p) (fprintf p "(define (f~a x) (+ x ~a))\n" k k))
           'replace)
         (loop (+ k 1))))
-    (rpc-dispatch st '(init) "test")
-    (when (> files 0)
-      (rpc-dispatch st (list 'import-code src) "test")
-      (rpc-dispatch st '(tag "t0") "test")
-      (let ((id (some-code-id st)))
-        (when id (rpc-dispatch st (list 'set id "src" "(define (f0 x) (- x 1))\n") "test"))))
-    (rpc-dispatch st '(tag "t1") "test")
+    ;; EVERY SETUP ANSWER IS KEPT, and GR-0 asserts each is ok (codex round
+    ;; (f)): a failed import would leave a smaller store than the name says
+    (let ((answers '()))
+      (define (step! request) (let ((a (rpc-dispatch st request "test"))) (set! answers (cons (cons request a) answers)) a))
+      (step! '(init))
+      (when (> files 0)
+        (step! (list 'import-code src))
+        (step! '(tag "t0"))
+        (let ((id (some-code-id st)))
+          (if id
+              (step! (list 'set id "src" "(define (f0 x) (- x 1))\n"))
+              (set! answers (cons (cons 'set '(no-code-block)) answers)))))
+      (step! '(tag "t1"))
+      (hashtable-set! setup-answers st (reverse answers)))
     st))
+(define setup-answers (make-hashtable string-hash string=?))
+;; -> the setup steps of ST whose answer is not ok, each (request answer)
+(define (failed-setup st)
+  (filter (lambda (e) (not (and (pair? (cdr e)) (eq? 'ok (car (cdr e))))))
+          (hashtable-ref setup-answers st '())))
 ;; -> the id of the first code block the outline lists, or #f
 (define (some-code-id st)
   (let ((o (rpc-dispatch st '(outline) "test")))
@@ -117,8 +129,18 @@
 (want "GR-0 the larger store has twice the files of the smaller, and every import answered"
       (list (length (directory-list (string-append root "/small-src"))) (length (directory-list (string-append root "/large-src"))))
       (list files-n (* 2 files-n)))
+;; THE STORES THEMSELVES (codex round (f)): every setup answer ok, and the
+;; imported blocks of the larger store twice the smaller's, the empty store's
+;; blocks taken off both
+(want "GR-0 every setup step answered ok, and the larger store holds twice the smaller's imported blocks"
+      (let ((e (block-count empty)) (sm (block-count small)) (lg (block-count large)))
+        (list (failed-setup empty) (failed-setup small) (failed-setup large)
+              (and (integer? e) (integer? sm) (integer? lg) (> sm e) (= (- lg e) (* 2 (- sm e))))))
+      (list '() '() '() #t))
 
 ;; ---- the verbs, timed by user CPU ------------------------------------------
+;; (each verb's answer is checked once on every store, outside the timed
+;; runs, after the list below: GR-0b)
 (define (out-dir) (string-append root "/out-" (number->string (random 1000000000))))
 (define verbs
   (list (cons 'check (lambda (st) (rpc-dispatch st '(check) "test")))
@@ -131,6 +153,30 @@
         (cons 'read (let ((ids (map (lambda (st) (cons st (or (some-code-id st) "no-such-block")))
                                     (list empty small large))))
                       (lambda (st) (rpc-dispatch st (list 'read (cdr (assoc st ids))) "test"))))))
+;; GR-0b, EACH TIMED VERB ANSWERS OK ON EVERY STORE, checked once outside the
+;; timing (codex rounds (f) and (h)); and log answers one entry per applied
+;; record, the records counted from check's writers, not from log itself
+(define (applied-records st)
+  (let* ((c (rpc-dispatch st '(check) "test")) (ws (and (pair? c) (assq 'writers (cdr c)))))
+    (if ws
+        (apply + (map (lambda (w) (let ((e (assq 'end (cdr w)))) (if e (cadr e) 0))) (cadr ws)))
+        (list 'no-writers c))))
+(define (answer-entries a)
+  (let ((items (and (pair? a) (list? a) (or (assq 'items (filter pair? (cdr a))) (assq 'entries (filter pair? (cdr a)))))))
+    (if items (length (cdr items)) (list 'no-items (if (pair? a) (car a) a)))))
+(want "GR-0b every timed verb answers ok on the empty, small and large stores, checked outside the timing"
+      (filter (lambda (x) x)
+              (apply append
+                (map (lambda (v)
+                       (map (lambda (st) (let ((a ((cdr v) st))) (and (not (and (pair? a) (eq? 'ok (car a)))) (list (car v) st a))))
+                            (list empty small large)))
+                     verbs)))
+      '())
+(let ((counts (map (lambda (st) (list (answer-entries (rpc-dispatch st '(log) "test")) (applied-records st))) (list small large))))
+  (printf "GR-0b log entries against applied records, small and large: ~s\n" counts)
+  (want "GR-0b log answers one entry per applied record on the small and large stores"
+        (map (lambda (c) (equal? (car c) (cadr c))) counts)
+        '(#t #t)))
 (define (cpu-of thunk)
   (collect)
   (let ((t0 (cpu-time))) (thunk) (- (cpu-time) t0)))

@@ -1757,8 +1757,12 @@
     (guard (e (#t '()))
       (let* ((baseline (fold-left (lambda (acc e) (cut-join acc (list-ref e 6)))
                                   '() entries))
+             ;; A WRITER READ AT 0 HAS NOT MOVED: a log writer whose first record
+             ;; is this commit's (a successor after adopt) stands at 0 before it,
+             ;; and is not named behind (test/commit-behind.sc CB-3).
              (cut (if (and (pair? own) (pair? (car own)))
-                      (map (lambda (p) (let ((b (assoc (car p) (car own)))) (if b (cons (car p) (cdr b)) p))) cut)
+                      (filter (lambda (p) (> (cdr p) 0))
+                              (map (lambda (p) (let ((b (assoc (car p) (car own)))) (if b (cons (car p) (cdr b)) p))) cut))
                       cut))
              (moved (list-sort (lambda (a b) (string<? (car a) (car b)))
                                (filter (lambda (p)
@@ -1788,6 +1792,18 @@
                                (if (assoc w acc) acc
                                    (cons (cons w (let ((b (assoc w before))) (if b (cdr b) 0))) acc)))
                              out ws))))))
+
+  ;; -> BEFORE with the completed plan's writer read just before the plan:
+  ;; a commit that completes a plan an earlier attempt wrote has that plan
+  ;; among its own records, and BEFORE (taken in this attempt) already holds
+  ;; it (commit-behind CB-4). PLAN is (<log writer> . <seq>) or #f.
+  (define (plan-before before plan)
+    (if (not (and (pair? plan) (string? (car plan)) (integer? (cdr plan))))
+        before
+        (let ((at (- (cdr plan) 1)) (b (assoc (car plan) before)))
+          (if b
+              (map (lambda (p) (if (equal? (car p) (car plan)) (cons (car p) (min (cdr p) at)) p)) before)
+              (cons (cons (car plan) at) before)))))
 
   ;; GATE, when given, is asked inside the lock before anything is retired,
   ;; and a refusal it answers is the answer, nothing retired (the commit
@@ -2228,6 +2244,9 @@
                             ;; the applied cut before this commit's records, for
                             ;; behind-clauses: read in the thunk, inside the lock
                             (before '())
+                            ;; the plan this commit completes, when an earlier
+                            ;; attempt wrote it: (<log writer> . <seq>), else #f
+                            (completed-plan #f)
                             ;; ((<provisional id> . <index of its holder's insert>) ...)
                             (holders '())
                             ;; ((<provisional id> <holder's index> <piece count>) ...)
@@ -2254,7 +2273,8 @@
                                                           (list (list-ref e 3) (list-ref e 4)
                                                                 (list-ref e 5) (list-ref e 6)))
                                                         entries)
-                                                   (map structural-consumes-item structural-entries)))))))
+                                                   (map structural-consumes-item structural-entries))))
+                                      (lambda (event) (set! completed-plan event)))))
                        (if (for-all (lambda (a) (and (pair? a) (eq? (car a) 'ok))) answers)
                            (begin
                              ;; NEVER: A REPLAY RETIRES NOTHING. The drafts
@@ -2299,7 +2319,7 @@
                                (let ((behind (if (and (not replay?) live)
                                                  (behind-clauses (reduce-applied-cut live)
                                                                  writer entries
-                                                                 (own-writers-before answers before))
+                                                                 (own-writers-before answers (plan-before before completed-plan)))
                                                  '())))
                                  (with-cleanup
                                    (append (list 'ok (cons 'items answers)) behind

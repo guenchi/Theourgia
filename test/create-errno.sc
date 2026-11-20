@@ -19,9 +19,10 @@
 ;;         answers EROFS; one carrying a text no errno has answers #f
 ;;   CE-1  a create under a regular file: ENOTDIR (the same on every platform)
 ;;   CE-2  a create at the root: EROFS where the root is read-only (macOS);
-;;         elsewhere the row prints what it reads and requires an errno named
+;;         elsewhere EACCES for a user and created for root
 ;;   CE-3  CONTROL: a create in a directory made unwritable: EACCES, mapped by
-;;         Chez's protection class before the text was ever read
+;;         Chez's protection class before the text was ever read; SKIPPED, with
+;;         its reason printed, when run as root (uid 0 writes there)
 (import (chezscheme)
         (only (theourgia ffi) file-create-exclusive! fs-error? fs-error-errno errno-name errno-text
               condition-errno unlink!))
@@ -84,17 +85,21 @@
 (define at-root (string-append "/.create-errno-" (number->string (get-process-id))))
 (define root-reading (create-refusal at-root))
 (define macos? (zero? (system "test \"$(uname -s)\" = Darwin")))
+;; uid 0 writes a directory whose mode is 555 and the root alike
+(define root-user? (zero? (system "test \"$(id -u)\" = 0")))
 (printf "CE-2 a create at the root reads ~s (~a)\n" root-reading (if macos? "macOS, a read-only system volume" "not macOS"))
-(want "CE-2 a create at the root: EROFS on macOS's read-only root; elsewhere an errno named (EACCES for a user), or created when run as root"
-      (if macos? root-reading (or (symbol? root-reading) root-reading))
-      (if macos? 'EROFS #t))
+(want "CE-2 a create at the root: EROFS on macOS's read-only root; elsewhere EACCES for a user, created when run as root"
+      root-reading
+      (cond (macos? 'EROFS) (root-user? 'created) (else 'EACCES)))
 
-(define closed (string-append root "/closed"))
-(system (string-append "mkdir -p '" closed "' && chmod 555 '" closed "'"))
-(define closed-reading (create-refusal (string-append closed "/x")))
-(system (string-append "chmod 755 '" closed "'"))
-(want "CE-3 CONTROL: a create in a directory made unwritable is refused with EACCES (Chez's protection class)"
-      closed-reading 'EACCES)
+(if root-user?
+    (printf "SKIP CE-3: run as root (uid 0 writes a directory whose mode is 555, so no refusal is made); run as another user to check it\n")
+    (let ((closed (string-append root "/closed")))
+      (system (string-append "mkdir -p '" closed "' && chmod 555 '" closed "'"))
+      (let ((closed-reading (create-refusal (string-append closed "/x"))))
+        (system (string-append "chmod 755 '" closed "'"))
+        (want "CE-3 CONTROL: a create in a directory made unwritable is refused with EACCES (Chez's protection class)"
+              closed-reading 'EACCES))))
 
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\ncreate-errno complete\n" bad rows-run)

@@ -174,6 +174,26 @@
               (file-exists? (string-append out5 "/c.scm"))))
       '(ok 3 ("a.scm" "b.scm") (#t #t) #t))
 
+;; EM-6, FILES WITH NO BLOCK OF THEIR OWN TEXT: an empty file and a file of a
+;; comment only, beside a file with a definition. Every range the map lists
+;; names a block (never #f); a file whose ranges the export does not know by
+;; block is left out of the map, as EM-5's added file is, and still counted.
+(define d6 (string-append root "/s6"))
+(run d6 "" "init")
+(define src6 (string-append root "/src6"))
+(system (string-append "mkdir -p '" src6 "' && : > '" src6 "/empty.scm' && printf ';; a comment only\\n' > '" src6 "/note.scm' && printf '(define (f x) x)\\n' > '" src6 "/a.scm'"))
+(printf "EM-6 import: ~s\n" (run d6 "" "import-code" src6))
+(define out6 (string-append root "/out6"))
+(define map6 (run d6 "" "export-code" out6 "--map"))
+(printf "EM-6 export-code --map: ~s\n" map6)
+(want "EM-6 a file with no block of its own: no range in the map names #f, and every mapped file is covered"
+      (let ((m (let ((c (clause map6 'map))) (if c (cadr c) '()))))
+        (list (car map6)
+              (for-all (lambda (e) (for-all (lambda (r) (string? (car r))) (cadr e))) m)
+              (for-all (lambda (e) (covers? (cadr e) (bytevector-length (file-bytes (string-append out6 "/" (car e)))))) m)
+              (and (member "a.scm" (map car m)) #t)))
+      '(ok #t #t #t))
+
 (system (string-append "rm -rf '" root "'"))
 (printf "\n~a failures\nrows: ~a\nexport-map complete\n" bad rows-run)
 (exit (if (= bad 0) 0 1))

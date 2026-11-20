@@ -95,6 +95,9 @@
         (reverse
           (let walk ((x forms) (out '()))
             (cond
+              ;; QUOTED DATA IS NOT A USE: a check quoted away no longer runs, so
+              ;; its name must leave the census (codex round (i))
+              ((and (pair? x) (memq (car x) '(quote quasiquote)) (pair? (cdr x))) out)
               ((and (pair? x) (memq (car x) '(degeneracy-check degeneracy-value)) (pair? (cdr x)))
                (walk (cddr x) (cons (cadr x) out)))
               ((pair? x) (walk (cdr x) (walk (car x) out)))
